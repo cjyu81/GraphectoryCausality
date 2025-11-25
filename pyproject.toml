@@ -11,12 +11,14 @@ dependencies = [
     "bashlex",
     "matplotlib",
     "networkx",
+    "numpy",
     "pandas",
     "pyyaml",
     "datasets",
     "pygraphviz",
-    "gsppy"
+    "gsppy",
+    "scipy"
 ]
 
 [tool.setuptools]
-packages = ["graph_construction", "graph_analysis", "languatory"]
+packages = ["graph_construction", "graph_analysis", "lang_construction", "lang_analysis"]
