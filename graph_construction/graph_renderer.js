@@ -15,12 +15,18 @@ function layoutGraph() {
     });
     g.setDefaultEdgeLabel(() => ({}));
     
-    // Add nodes with fixed sizing (no thought-based scaling)
+    // Add nodes with sizing based on label content.
+    // Line 1 (action title) uses 12px bold; lines 2+ use 9-10px.
     nodesData.forEach(node => {
         const lines = node.label.split('\\n');
-        const maxLineLength = Math.max(...lines.map(l => l.length));
-        const width = Math.max(140, maxLineLength * 8);
-        const height = Math.max(60, 35 + lines.length * 18);
+        // Line 1 is ~12px bold (≈7px per char), lines 2+ are 9-10px (≈5.5px per char)
+        const line1Len = lines[0] ? Math.min(lines[0].length, 30) : 0;
+        const restMax  = lines.slice(1).reduce((m, l) => Math.max(m, Math.min(l.length, 35)), 0);
+        const widthFromL1   = line1Len  * 7.5 + 24;
+        const widthFromRest = restMax   * 5.5 + 24;
+        const width  = Math.max(100, widthFromL1, widthFromRest);
+        // line-height 16px, with 10px top/bottom padding
+        const height = Math.max(40, lines.length * 16 + 12);
         g.setNode(node.id, { width, height, ...node });
     });
     
@@ -345,11 +351,18 @@ function renderNodes(svg, g, defs) {
             text.setAttribute('dominant-baseline', 'middle');
             
             if (i === 0) {
+                // Line 1: action title — bold, dark, readable
                 text.setAttribute('font-weight', 'bold');
-                text.setAttribute('font-size', '14');
-            } else {
-                text.setAttribute('font-size', '11');
+                text.setAttribute('font-size', '12');
+                text.setAttribute('fill', '#1a1a2e');
+            } else if (i === 1) {
+                // Line 2: step index — medium, slightly muted
+                text.setAttribute('font-size', '10');
                 text.setAttribute('fill', '#555');
+            } else {
+                // Lines 3+: path / view-range — small, light grey
+                text.setAttribute('font-size', '9');
+                text.setAttribute('fill', '#666');
             }
             
             text.textContent = line;

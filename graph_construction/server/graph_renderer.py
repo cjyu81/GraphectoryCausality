@@ -123,11 +123,44 @@ def _node_colors(data: dict) -> list[str]:
 
 
 def _make_label(data: dict) -> str:
-    """Multi-line display label for a node."""
+    """Short multi-line display label for a node (title + key detail only).
+
+    Line 1 – concise action title (tool/subcommand or bare shell verb)
+    Line 2 – step index(es)
+    Line 3 – abbreviated file path (if available)
+    Line 4 – view range (if available)
+    """
     lines = []
 
-    base = (data.get("command") or data.get("subcommand") or
-            data.get("label") or "").strip()
+    tool       = (data.get("tool")       or "").strip()
+    subcommand = (data.get("subcommand") or "").strip()
+    command    = (data.get("command")    or "").strip()
+    raw_label  = (data.get("label")      or "").strip()
+
+    # ── Line 1: concise action title ────────────────────────────────────────
+    if tool and subcommand:
+        # e.g. "str_replace_editor" + "view" → "editor: view"
+        # Keep the last meaningful segment of an underscore-joined tool name
+        short_tool = tool.split("_")[-1] if "_" in tool else tool
+        base = f"{short_tool}: {subcommand}"
+    elif tool:
+        base = tool
+    elif command:
+        # bare shell command – only the first token (verb), capped at 20 chars
+        # command may be the full action string when fallback parser is used;
+        # we only want the verb (e.g. "grep", "python", "sed …" → "sed")
+        first_token = command.split()[0] if command.split() else command
+        base = first_token[:20]
+    elif raw_label:
+        # Last-resort fallback: take only the first line, capped at 30 chars
+        first_line = raw_label.splitlines()[0]
+        # If raw_label looks like "tool: subcommand …rest", trim after the verb
+        parts = first_line.split()
+        base = " ".join(parts[:2])[:30] if len(parts) >= 2 else first_line[:30]
+        if len(first_line) > 30:
+            base += "…"
+    else:
+        base = "action"
 
     args = data.get("args", {}) or {}
     if isinstance(args, dict):
@@ -137,61 +170,151 @@ def _make_label(data: dict) -> str:
         elif status and str(status).startswith("failure"):
             base += " ✗"
 
-    lines.append(base if base else data.get("label", ""))
+    lines.append(base)
 
+    # ── Line 2: step index(es) ───────────────────────────────────────────────
     step_indices = data.get("step_indices", [])
     if step_indices:
-        if len(step_indices) <= 3:
-            lines.append(f"steps: {','.join(map(str, step_indices))}")
+        if len(step_indices) == 1:
+            lines.append(f"step {step_indices[0]}")
+        elif len(step_indices) <= 3:
+            lines.append(f"steps {','.join(map(str, step_indices))}")
         else:
-            lines.append(f"steps: {step_indices[0]}..{step_indices[-1]} ({len(step_indices)})")
+            lines.append(f"steps {step_indices[0]}–{step_indices[-1]} (×{len(step_indices)})")
 
+    # ── Line 3: file path (abbreviated) if available ─────────────────────────
     if isinstance(args, dict):
         path = args.get("path")
         if path:
             p = str(path).replace("\\", "/")
-            parts = p.split("/")
-            lines.append(("…/" + "/".join(parts[-2:])) if len(parts) > 2 else p[-30:])
+            parts = [pt for pt in p.split("/") if pt]
+            if len(parts) > 2:
+                short = "…/" + "/".join(parts[-2:])
+            else:
+                short = p
+            # Hard cap so the node stays narrow
+            lines.append(short[:35] + ("…" if len(short) > 35 else ""))
 
+        # ── Line 4: view range ───────────────────────────────────────────────
         vr = args.get("view_range")
         if isinstance(vr, (list, tuple)) and len(vr) == 2:
-            lines.append(f"L{vr[0]}-{vr[1]}")
+            lines.append(f"L{vr[0]}–{vr[1]}")
 
     return "\\n".join(lines)
 
 
 def _make_tooltip(data: dict) -> str:
-    """HTML tooltip content for a node."""
-    parts = [f"<strong>{_esc(data.get('label', ''))}</strong>"]
+    """Rich HTML tooltip for a node.
 
-    if data.get("tool"):
-        parts.append(f"Tool: {_esc(data['tool'])}")
-    if data.get("subcommand"):
-        parts.append(f"Subcommand: {_esc(data['subcommand'])}")
+    Matches the reference format:
+        <Title line>
+        Tool: …        Subcommand: …
+        Phase(s): …
+        Step: …        Thought len: …
+        --- Arguments ---
+        path: …
+        view_range: …
+        …
+    """
+    parts: list[str] = []
 
-    phases = data.get("phases", ["general"])
-    parts.append(f"Phases: {', '.join(set(phases))}")
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _row(label: str, value: str) -> str:
+        return (
+            f'<div style="display:flex;gap:8px;margin:2px 0;">'
+            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">{_esc(label)}</span>'
+            f'<span style="word-break:break-all;">{_esc(value)}</span>'
+            f'</div>'
+        )
 
+    def _section(title: str) -> str:
+        return (
+            f'<div style="margin-top:10px;margin-bottom:3px;'
+            f'font-weight:700;color:#f0c27f;'
+            f'border-bottom:1px solid #555;padding-bottom:2px;">'
+            f'{_esc(title)}</div>'
+        )
+
+    # ── Header: human-readable title ─────────────────────────────────────────
+    tool       = (data.get("tool")       or "").strip()
+    subcommand = (data.get("subcommand") or "").strip()
+    command    = (data.get("command")    or "").strip()
+    raw_label  = (data.get("label")      or "").strip()
+
+    # Build a descriptive title for the tooltip header
+    if tool and subcommand:
+        header_title = f"{tool}: {subcommand}"
+    elif tool:
+        header_title = tool
+    elif command:
+        header_title = command[:80] + ("…" if len(command) > 80 else "")
+    else:
+        header_title = raw_label[:80] + ("…" if len(raw_label) > 80 else "")
+
+    parts.append(
+        f'<div style="font-weight:700;font-size:14px;margin-bottom:8px;'
+        f'color:#fff;border-bottom:1px solid #666;padding-bottom:5px;">'
+        f'{_esc(header_title)}</div>'
+    )
+
+    # ── Identity section ─────────────────────────────────────────────────────
+    if tool:
+        parts.append(_row("Tool", tool))
+    if subcommand:
+        parts.append(_row("Subcommand", subcommand))
+    if command and not tool:
+        # For shell commands show the full command (truncated) when no tool
+        cmd_display = command if len(command) <= 150 else command[:150] + "…"
+        parts.append(_row("Command", cmd_display))
+
+    phases = data.get("phases") or ["general"]
+    parts.append(_row("Phase(s)", ", ".join(sorted(set(phases)))))
+
+    # ── Execution section ────────────────────────────────────────────────────
     step_indices    = data.get("step_indices", [])
     thought_lengths = data.get("thought_lengths", [])
 
     if step_indices:
-        parts.append(f"Step: {', '.join(map(str, step_indices))}")
-    if thought_lengths:
-        parts.append(
-            f"Thought len: {thought_lengths[0]}" if len(thought_lengths) == 1
-            else f"Thought lengths: {', '.join(map(str, thought_lengths))}"
-        )
+        if len(step_indices) == 1:
+            parts.append(_row("Step", str(step_indices[0])))
+        else:
+            parts.append(_row("Steps", ", ".join(map(str, step_indices))))
 
+    if thought_lengths:
+        if len(thought_lengths) == 1:
+            parts.append(_row("Thought len", str(thought_lengths[0])))
+        else:
+            avg   = sum(thought_lengths) // len(thought_lengths)
+            total = sum(thought_lengths)
+            parts.append(_row("Thought len", f"avg {avg}, total {total} ({len(thought_lengths)} steps)"))
+
+    # ── Arguments section ────────────────────────────────────────────────────
     args = data.get("args", {}) or {}
     if isinstance(args, dict) and args:
-        parts.append("<br><strong>Arguments:</strong>")
-        for k, v in args.items():
-            v_str = str(v)
-            display = v_str if len(v_str) <= 100 else v_str[:100] + "…"
-            parts.append(f"  • {k}: {_esc(display)}")
+        # If the only arg is _raw (fallback-parsed shell command remainder),
+        # surface it as "Args" directly instead of under a section header
+        if list(args.keys()) == ["_raw"]:
+            raw_val = args["_raw"]
+            if raw_val:
+                parts.append(_row("Args", raw_val[:200] + ("…" if len(raw_val) > 200 else "")))
+        else:
+            parts.append(_section("Arguments"))
+            for k, v in args.items():
+                if v is None or k == "_raw":
+                    continue
+                v_str = str(v)
+                # Long strings (old_str/new_str diffs): show a trimmed preview with
+                # newlines rendered as the return symbol
+                if len(v_str) > 300:
+                    display = v_str[:300].replace("\n", "↵") + "…"
+                else:
+                    display = v_str.replace("\n", "↵")
+                parts.append(_row(k, display))
+            # Append _raw at the bottom if it exists alongside other args
+            if "_raw" in args and args["_raw"]:
+                parts.append(_row("raw args", args["_raw"][:200]))
 
-    return "<br>".join(parts)
+    return "".join(parts)
 
 
 # ── Edge preparation ────────────────────────────────────────────────────────

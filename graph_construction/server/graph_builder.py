@@ -153,10 +153,20 @@ def build_graph(traj_data: dict, instance_id: str,
             args       = parsed.get("args",  {})
             flags      = parsed.get("flags", {})
 
-            node_label = (
-                f"{tool}: {subcommand}" if tool and subcommand
-                else tool or command or action_str.strip()
-            )
+            # node_label is the short canonical name for the node.
+            # For tool-based actions: "tool: subcommand" (e.g. "str_replace_editor: view")
+            # For bare shell commands: just the command verb (first token), not the full string
+            if tool and subcommand:
+                node_label = f"{tool}: {subcommand}"
+            elif tool:
+                node_label = tool
+            elif command:
+                # command may be the full shell action string from the fallback parser;
+                # only use the first token (verb) so nodes stay compact.
+                node_label = command.split()[0] if command.split() else command
+            else:
+                # Absolute last resort: first token of the raw action string
+                node_label = action_str.strip().split()[0][:30] if action_str.strip() else "action"
 
             phase = get_phase(tool, subcommand, command, args, builder.prev_phases)
 
@@ -206,7 +216,28 @@ def build_graph(traj_data: dict, instance_id: str,
 # ── Fallback parser ────────────────────────────────────────────────────────
 
 def _fallback_parse(action_str: str) -> list[dict]:
-    """Minimal parser used when CommandParser is unavailable."""
-    parts = [p.strip() for p in action_str.split("&&")]
-    return [{"command": p, "tool": "", "subcommand": "", "args": {}, "flags": {}}
-            for p in parts if p]
+    """Minimal parser used when CommandParser is unavailable.
+
+    Splits on ``&&`` and returns one parsed-command dict per part.
+    ``command`` holds the first token (verb) for node labelling;
+    ``command_full`` holds the entire part for tooltip display.
+    ``args`` is a dict with a ``_raw`` key carrying the remainder of the
+    command (everything after the verb) so the tooltip can show context.
+    """
+    results = []
+    for part in action_str.split("&&"):
+        part = part.strip()
+        if not part:
+            continue
+        tokens = part.split()
+        verb   = tokens[0] if tokens else part
+        rest   = " ".join(tokens[1:]) if len(tokens) > 1 else ""
+        args   = {"_raw": rest} if rest else {}
+        results.append({
+            "command":    verb,         # short verb only – used for node_label
+            "tool":       "",
+            "subcommand": "",
+            "args":       args,
+            "flags":      {},
+        })
+    return results

@@ -201,21 +201,20 @@ svg {
 
 .tooltip {
     position: absolute;
-    background: rgba(44, 62, 80, 0.95);
-    color: white;
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 13px;
+    background: rgba(22, 28, 36, 0.97);
+    color: #e0e0e0;
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-size: 12px;
     line-height: 1.6;
     pointer-events: none;
     z-index: 1000;
-    max-width: 400px;
-    box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+    max-width: 560px;
+    min-width: 260px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
     display: none;
-}
-
-.tooltip strong {
-    color: #3498db;
+    border: 1px solid rgba(255,255,255,0.10);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
 .legend {
