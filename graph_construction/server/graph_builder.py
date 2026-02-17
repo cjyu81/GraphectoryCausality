@@ -8,6 +8,7 @@ Responsible for:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,39 +22,119 @@ from buildGraph import (
     check_edit_status,
 )
 
+# ── Test-outcome helpers (mirrors buildGraph.check_command_outcome) ─────────
+
+TEST_COMMANDS = {"python", "python2", "python3", "pytest", "unittest", "nosetests", "tox"}
+RE_PYTEST_FAIL  = re.compile(r"\b(\d+)\s+failed\b",  re.IGNORECASE)
+RE_PYTEST_ERROR = re.compile(r"\b(\d+)\s+errors?\b", re.IGNORECASE)
+RE_PYTEST_PASS  = re.compile(r"\b(\d+)\s+passed\b",  re.IGNORECASE)
+EXCEPTION_SIGNS = ["Traceback (most recent call last):"]
+
+
+def check_command_outcome(command: str, observation: str,
+                          tool: str = None, subcommand: str = None,
+                          args: dict = None) -> str | None:
+    """Return 'success', 'failure', or None for a command + its observation."""
+    obs = observation or ""
+
+    # Edit-status from str_replace_editor takes priority
+    if tool and subcommand:
+        edit_status = check_edit_status(tool, subcommand, args or {}, observation)
+        if edit_status and str(edit_status).startswith("failure"):
+            return "failure"
+        if edit_status == "success":
+            return "success"
+
+    # Exception traceback
+    for sig in EXCEPTION_SIGNS:
+        if sig in obs:
+            return "failure"
+
+    # Structured pytest output
+    if RE_PYTEST_FAIL.search(obs) or RE_PYTEST_ERROR.search(obs):
+        return "failure"
+    if RE_PYTEST_PASS.search(obs):
+        return "success"
+    if "FAILURES" in obs or "ERRORS" in obs or "INTERNALERROR" in obs:
+        return "failure"
+
+    return None   # indeterminate – don't mark the node
+
 
 # ── Directory scanning ──────────────────────────────────────────────────────
 
-def scan_trajectories(graphs_dir: Path) -> list[dict]:
+def scan_trajectories(graphs_dir: Path,
+                      eval_report_path: str | None = None) -> list[dict]:
     """Return a sorted list of trajectory metadata dicts.
 
-    Each dict has:
-        instance_id, status, difficulty
+    Each dict has: instance_id, status, difficulty, step_count.
+
+    Resolution status is resolved from (in priority order):
+      1. The eval_report JSON (resolved_ids / unresolved_ids lists).
+      2. A sibling .json sidecar file produced by a previous graph build.
     """
+    # Pre-load the eval report once for fast lookup
+    resolved_set:   set[str] = set()
+    unresolved_set: set[str] = set()
+    if eval_report_path:
+        try:
+            with open(eval_report_path) as f:
+                report = json.load(f)
+            resolved_set   = set(report.get("resolved_ids",   []))
+            unresolved_set = set(report.get("unresolved_ids", []))
+        except Exception:
+            pass
+
     results = []
 
     for traj_file in sorted(graphs_dir.rglob("*.traj")):
         instance_id = traj_file.stem
 
-        # Try to read metadata from a sibling .json file
-        json_file = traj_file.with_suffix(".json")
-        status     = "unknown"
-        difficulty = "unknown"
+        # ── Resolution status ────────────────────────────────────────────
+        if instance_id in resolved_set:
+            status = "resolved"
+        elif instance_id in unresolved_set:
+            status = "unresolved"
+        else:
+            # Fall back to sidecar .json
+            status = "unsubmitted"
+            json_file = traj_file.with_suffix(".json")
+            if json_file.exists():
+                try:
+                    with open(json_file) as f:
+                        meta = json.load(f)
+                    graph_meta = meta.get("graph", {})
+                    s = graph_meta.get("resolution_status", "")
+                    if s in ("resolved", "unresolved", "unsubmitted"):
+                        status = s
+                except Exception:
+                    pass
 
+        # ── Difficulty ───────────────────────────────────────────────────
+        difficulty = "unknown"
+        json_file = traj_file.with_suffix(".json")
         if json_file.exists():
             try:
                 with open(json_file) as f:
                     meta = json.load(f)
-                graph_meta = meta.get("graph", {})
-                status     = graph_meta.get("resolution_status", "unknown")
-                difficulty = graph_meta.get("debug_difficulty",  "unknown")
+                difficulty = meta.get("graph", {}).get("debug_difficulty", "unknown")
             except Exception:
                 pass
+
+        # ── Step count (from the .traj itself) ───────────────────────────
+        step_count = 0
+        try:
+            with open(traj_file) as f:
+                traj = json.load(f)
+            step_count = len(traj.get("trajectory", []))
+        except Exception:
+            pass
 
         results.append({
             "instance_id": instance_id,
             "status":      status,
             "difficulty":  difficulty,
+            "step_count":  step_count,
         })
 
     return results
@@ -170,11 +251,24 @@ def build_graph(traj_data: dict, instance_id: str,
 
             phase = get_phase(tool, subcommand, command, args, builder.prev_phases)
 
-            edit_status = check_edit_status(
-                tool, subcommand, args, step.get("observation", "")
+            # ── Determine outcome (edit success/failure + test pass/fail) ──
+            observation = step.get("observation", "")
+            outcome = check_command_outcome(
+                command=command,
+                observation=observation,
+                tool=tool,
+                subcommand=subcommand,
+                args=args if isinstance(args, dict) else {},
             )
+
+            # Persist edit_status for str_replace_editor nodes (used by renderer)
+            edit_status = check_edit_status(tool, subcommand, args, observation)
             if edit_status and isinstance(args, dict):
                 args["edit_status"] = edit_status
+
+            # Store the outcome so the renderer can show ✓/✗ even for shell cmds
+            if outcome and isinstance(args, dict):
+                args.setdefault("command_outcome", outcome)
 
             node_key = builder.add_or_update_node(
                 node_label    = node_label,

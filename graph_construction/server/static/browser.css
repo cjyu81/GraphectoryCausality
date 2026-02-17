@@ -169,9 +169,10 @@ body {
     letter-spacing: .4px;
 }
 
-.badge-resolved   { background: #d1fae5; color: #065f46; }
-.badge-unresolved { background: #fee2e2; color: #991b1b; }
-.badge-unknown    { background: #f3f4f6; color: #6b7280; }
+.badge-resolved     { background: #d1fae5; color: #065f46; }
+.badge-unresolved   { background: #fee2e2; color: #991b1b; }
+.badge-unsubmitted  { background: #fef3c7; color: #92400e; }
+.badge-unknown      { background: #f3f4f6; color: #6b7280; }
 
 /* ── Main pane ──────────────────────────────────────────── */
 .graph-pane {

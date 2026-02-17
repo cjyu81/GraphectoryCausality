@@ -39,17 +39,26 @@ function renderList(graphs) {
         return;
     }
 
-    el.innerHTML = graphs.map(g => `
+    el.innerHTML = graphs.map(g => {
+        // Normalise status so we always have a valid badge class
+        const status     = g.status || 'unknown';
+        const badgeClass = ['resolved','unresolved','unsubmitted'].includes(status)
+                           ? status : 'unknown';
+        const steps      = g.step_count != null ? `${g.step_count} steps` : '';
+        const diff       = g.difficulty && g.difficulty !== 'unknown' ? escHtml(g.difficulty) : '';
+        const metaParts  = [steps, diff].filter(Boolean).join(' · ');
+
+        return `
         <div class="graph-item${g.instance_id === activeId ? ' active' : ''}"
              data-id="${escHtml(g.instance_id)}"
              onclick="selectGraph('${escHtml(g.instance_id)}')">
             <div class="item-title" title="${escHtml(g.instance_id)}">${escHtml(g.instance_id)}</div>
             <div class="item-meta">
-                <span class="badge badge-${g.status}">${g.status}</span>
-                <span>${escHtml(g.difficulty)}</span>
+                <span class="badge badge-${badgeClass}">${escHtml(status)}</span>
+                ${metaParts ? `<span>${metaParts}</span>` : ''}
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 // ── Search ─────────────────────────────────────────────────

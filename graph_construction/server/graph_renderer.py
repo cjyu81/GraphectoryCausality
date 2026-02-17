@@ -91,10 +91,15 @@ def _prepare_nodes(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
         colors        = _node_colors(data)
         primary_color = colors[0] if colors else PHASE_COLORS["general"]
 
-        args        = data.get("args", {}) or {}
-        edit_status = args.get("edit_status", "") if isinstance(args, dict) else ""
-        has_failure = bool(edit_status and str(edit_status).startswith("failure"))
-        has_cd      = bool(data.get("has_cd", False))
+        args             = data.get("args", {}) or {}
+        edit_status      = args.get("edit_status",     "") if isinstance(args, dict) else ""
+        command_outcome  = args.get("command_outcome", "") if isinstance(args, dict) else ""
+        # A node is marked as failed if either the edit operation or the command failed
+        has_failure = bool(
+            (edit_status     and str(edit_status).startswith("failure")) or
+            (command_outcome and str(command_outcome).startswith("failure"))
+        )
+        has_cd = bool(data.get("has_cd", False))
 
         nodes.append({
             "id":          node_id,
@@ -123,12 +128,16 @@ def _node_colors(data: dict) -> list[str]:
 
 
 def _make_label(data: dict) -> str:
-    """Short multi-line display label for a node (title + key detail only).
+    """Short multi-line display label for a node.
 
-    Line 1 – concise action title (tool/subcommand or bare shell verb)
+    Line 1 – action title:
+              • tool nodes  → subcommand verb (e.g. "view", "str_replace", "create")
+              • shell nodes → command verb    (e.g. "python", "grep")
     Line 2 – step index(es)
-    Line 3 – abbreviated file path (if available)
+    Line 3 – abbreviated file path or key arg (if available)
     Line 4 – view range (if available)
+
+    Success/failure markers (✓/✗) are appended to Line 1.
     """
     lines = []
 
@@ -136,35 +145,33 @@ def _make_label(data: dict) -> str:
     subcommand = (data.get("subcommand") or "").strip()
     command    = (data.get("command")    or "").strip()
     raw_label  = (data.get("label")      or "").strip()
+    args       = data.get("args", {}) or {}
 
     # ── Line 1: concise action title ────────────────────────────────────────
     if tool and subcommand:
-        # e.g. "str_replace_editor" + "view" → "editor: view"
-        # Keep the last meaningful segment of an underscore-joined tool name
-        short_tool = tool.split("_")[-1] if "_" in tool else tool
-        base = f"{short_tool}: {subcommand}"
+        # Show only the subcommand verb — it's the meaningful action
+        # (e.g. "view", "str_replace", "create", "bash")
+        base = subcommand
     elif tool:
         base = tool
     elif command:
         # bare shell command – only the first token (verb), capped at 20 chars
-        # command may be the full action string when fallback parser is used;
-        # we only want the verb (e.g. "grep", "python", "sed …" → "sed")
         first_token = command.split()[0] if command.split() else command
         base = first_token[:20]
     elif raw_label:
-        # Last-resort fallback: take only the first line, capped at 30 chars
-        first_line = raw_label.splitlines()[0]
-        # If raw_label looks like "tool: subcommand …rest", trim after the verb
-        parts = first_line.split()
-        base = " ".join(parts[:2])[:30] if len(parts) >= 2 else first_line[:30]
-        if len(first_line) > 30:
+        # Last-resort fallback: first two tokens of the raw label
+        parts = raw_label.splitlines()[0].split()
+        base = " ".join(parts[:2])[:30]
+        if len(raw_label.splitlines()[0]) > 30:
             base += "…"
     else:
         base = "action"
 
-    args = data.get("args", {}) or {}
+    # Outcome badge — prefer edit_status, fall back to command_outcome
     if isinstance(args, dict):
-        status = args.get("edit_status")
+        edit_status      = args.get("edit_status", "")
+        command_outcome  = args.get("command_outcome", "")
+        status = edit_status or command_outcome
         if status == "success":
             base += " ✓"
         elif status and str(status).startswith("failure"):
@@ -182,18 +189,19 @@ def _make_label(data: dict) -> str:
         else:
             lines.append(f"steps {step_indices[0]}–{step_indices[-1]} (×{len(step_indices)})")
 
-    # ── Line 3: file path (abbreviated) if available ─────────────────────────
+    # ── Line 3: key argument info ────────────────────────────────────────────
     if isinstance(args, dict):
         path = args.get("path")
         if path:
             p = str(path).replace("\\", "/")
             parts = [pt for pt in p.split("/") if pt]
-            if len(parts) > 2:
-                short = "…/" + "/".join(parts[-2:])
-            else:
-                short = p
-            # Hard cap so the node stays narrow
+            short = ("…/" + "/".join(parts[-2:])) if len(parts) > 2 else p
             lines.append(short[:35] + ("…" if len(short) > 35 else ""))
+
+        # For shell commands with _raw args, show a brief excerpt
+        elif args.get("_raw"):
+            raw = str(args["_raw"])
+            lines.append(raw[:28] + ("…" if len(raw) > 28 else ""))
 
         # ── Line 4: view range ───────────────────────────────────────────────
         vr = args.get("view_range")
@@ -288,31 +296,48 @@ def _make_tooltip(data: dict) -> str:
             total = sum(thought_lengths)
             parts.append(_row("Thought len", f"avg {avg}, total {total} ({len(thought_lengths)} steps)"))
 
-    # ── Arguments section ────────────────────────────────────────────────────
+    # ── Outcome (shown before arguments for visibility) ──────────────────────
     args = data.get("args", {}) or {}
+    if isinstance(args, dict):
+        edit_status     = args.get("edit_status", "")
+        command_outcome = args.get("command_outcome", "")
+        outcome_display = edit_status or command_outcome
+        if outcome_display:
+            color = "#7defa7" if outcome_display == "success" else "#ff8080"
+            parts.append(
+                f'<div style="display:flex;gap:8px;margin:4px 0;">'
+                f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Outcome</span>'
+                f'<span style="color:{color};font-weight:600;">{_esc(outcome_display)}</span>'
+                f'</div>'
+            )
+
+    # ── Arguments section ────────────────────────────────────────────────────
+    # Internal bookkeeping keys that shouldn't be shown to the user
+    _SKIP_KEYS = {"edit_status", "command_outcome"}
+
     if isinstance(args, dict) and args:
-        # If the only arg is _raw (fallback-parsed shell command remainder),
-        # surface it as "Args" directly instead of under a section header
-        if list(args.keys()) == ["_raw"]:
-            raw_val = args["_raw"]
-            if raw_val:
-                parts.append(_row("Args", raw_val[:200] + ("…" if len(raw_val) > 200 else "")))
-        else:
-            parts.append(_section("Arguments"))
-            for k, v in args.items():
-                if v is None or k == "_raw":
-                    continue
-                v_str = str(v)
-                # Long strings (old_str/new_str diffs): show a trimmed preview with
-                # newlines rendered as the return symbol
-                if len(v_str) > 300:
-                    display = v_str[:300].replace("\n", "↵") + "…"
-                else:
-                    display = v_str.replace("\n", "↵")
-                parts.append(_row(k, display))
-            # Append _raw at the bottom if it exists alongside other args
-            if "_raw" in args and args["_raw"]:
-                parts.append(_row("raw args", args["_raw"][:200]))
+        visible = {k: v for k, v in args.items()
+                   if k not in _SKIP_KEYS and v is not None}
+
+        if visible:
+            # If the only arg is _raw (fallback-parsed shell command remainder),
+            # surface it as "Args" directly without a section header
+            if list(visible.keys()) == ["_raw"]:
+                raw_val = str(visible["_raw"])
+                if raw_val:
+                    parts.append(_row("Args", raw_val[:200] + ("…" if len(raw_val) > 200 else "")))
+            else:
+                parts.append(_section("Arguments"))
+                for k, v in visible.items():
+                    if k == "_raw":
+                        continue
+                    v_str = str(v)
+                    display = (v_str[:300].replace("\n", "↵") + "…") if len(v_str) > 300 \
+                              else v_str.replace("\n", "↵")
+                    parts.append(_row(k, display))
+                # Show _raw at the bottom if it exists alongside structured args
+                if "_raw" in visible and visible["_raw"]:
+                    parts.append(_row("raw args", str(visible["_raw"])[:200]))
 
     return "".join(parts)
 

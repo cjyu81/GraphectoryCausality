@@ -80,7 +80,7 @@ class GraphHandler(BaseHTTPRequestHandler):
     # ── Route handlers ──────────────────────────────────────────────────
 
     def _api_graphs(self):
-        graphs = scan_trajectories(self.graphs_dir)
+        graphs = scan_trajectories(self.graphs_dir, self.eval_report_path)
         self._respond_json(graphs)
 
     def _api_graph(self, instance_id: str, filter_cd: bool):
