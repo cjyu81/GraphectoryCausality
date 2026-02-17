@@ -16,16 +16,17 @@ function layoutGraph() {
     g.setDefaultEdgeLabel(() => ({}));
     
     // Add nodes with sizing based on label content.
-    // Line 1 (action title) uses 12px bold; lines 2+ use 9-10px.
+    // Apply verbosity setting to choose which label to use for sizing.
     nodesData.forEach(node => {
-        const lines = node.label.split('\\n');
-        // Line 1 is ~12px bold (≈7px per char), lines 2+ are 9-10px (≈5.5px per char)
+        const label = settings.nodeVerbosity ? node.label_verbose : node.label_minimal;
+        node.displayLabel = label;  // Store for rendering
+        
+        const lines = label.split('\\n');
         const line1Len = lines[0] ? Math.min(lines[0].length, 30) : 0;
         const restMax  = lines.slice(1).reduce((m, l) => Math.max(m, Math.min(l.length, 35)), 0);
         const widthFromL1   = line1Len  * 7.5 + 24;
         const widthFromRest = restMax   * 5.5 + 24;
         const width  = Math.max(100, widthFromL1, widthFromRest);
-        // line-height 16px, with 10px top/bottom padding
         const height = Math.max(40, lines.length * 16 + 12);
         g.setNode(node.id, { width, height, ...node });
     });
@@ -149,175 +150,234 @@ function createMarkers(svg) {
 }
 
 // ==================== Edge Rendering ====================
+
+/**
+ * Map a thought_length to a stroke width.
+ * Uses settings.thoughtQuotes to choose raw or clean length.
+ */
+function getThoughtLength(edge) {
+    return settings.thoughtQuotes ? edge.thought_length_clean : edge.thought_length_raw;
+}
+
+function thoughtToWidth(thoughtLength) {
+    if (thoughtLength <= 0) return 1;
+    const capped = Math.min(thoughtLength, 1500);
+    if (capped <= 200)  return 1.5 + (capped / 200) * 1.5;
+    if (capped <= 800)  return 3   + ((capped - 200) / 600) * 3;
+    return 6 + ((capped - 800) / 700) * 3;
+}
+
 function calculateEdgeStyle(edge) {
-    /**
-     * Calculate edge styling based on thought length and multi-node status
-     * 
-     * Rules:
-     * - is_multi_node_step = true: Blue dotted line, minimum width (nodes in same step)
-     * - thought_length = 0: Gray dotted line, minimum width (no thinking)
-     * - thought_length > 0: Solid line, width scales 2-8px based on length (0-1000 chars)
-     */
-    let strokeWidth = 2;  // default
-    let strokeDasharray = '';  // solid by default
-    let stroke = '#95a5a6';  // default gray
-    let markerEnd = 'url(#arrowhead-exec)';
-    
+    if (edge.type === 'hier') {
+        return {
+            strokeWidth:    1.5,
+            strokeDasharray: '6,4',
+            stroke:          '#27ae60',
+            markerEnd:       'url(#arrowhead-hier)',
+            opacity:         0.75,
+        };
+    }
+
     if (edge.type === 'exec') {
         if (edge.is_multi_node_step) {
-            // Multiple nodes in same trajectory step: blue dotted, minimum size
-            strokeWidth = 1;
-            strokeDasharray = '5, 5';
-            stroke = '#3498db';
-            markerEnd = 'url(#arrowhead-exec-multi)';
-        } else if (edge.thought_length === 0) {
-            // No thought: gray dotted line, minimum size
-            strokeWidth = 1;
-            strokeDasharray = '5, 5';
-            stroke = '#95a5a6';
-            markerEnd = 'url(#arrowhead-exec)';
-        } else {
-            // Normal exec edge with thought: solid line, width based on thought length
-            // Map thought_length (0-1000 chars) to stroke width (2-8px)
-            const maxThought = 1000;
-            const minWidth = 2;
-            const maxWidth = 8;
-            const normalizedThought = Math.min(edge.thought_length, maxThought);
-            strokeWidth = minWidth + (normalizedThought / maxThought) * (maxWidth - minWidth);
-            stroke = '#95a5a6';
-            markerEnd = 'url(#arrowhead-exec)';
+            return {
+                strokeWidth:    1,
+                strokeDasharray: '4,4',
+                stroke:          '#3498db',
+                markerEnd:       'url(#arrowhead-exec-multi)',
+                opacity:         0.9,
+            };
         }
-    } else if (edge.type === 'hier') {
-        // Hierarchical edge styling
-        strokeWidth = 2;
-        strokeDasharray = '5, 5';
-        stroke = '#27ae60';
-        markerEnd = 'url(#arrowhead-hier)';
+        const tlen = getThoughtLength(edge);
+        if (tlen === 0) {
+            return {
+                strokeWidth:    1,
+                strokeDasharray: '4,4',
+                stroke:          '#95a5a6',
+                markerEnd:       'url(#arrowhead-exec)',
+                opacity:         0.75,
+            };
+        }
+        const w = thoughtToWidth(tlen);
+        return {
+            strokeWidth:    w,
+            strokeDasharray: '',
+            stroke:          '#7f8c8d',
+            markerEnd:       `url(#arrowhead-exec-w${Math.round(w)})`,
+            opacity:         1,
+        };
     }
-    
-    return { strokeWidth, strokeDasharray, stroke, markerEnd };
+
+    return { strokeWidth: 1, strokeDasharray: '', stroke: '#bbb',
+             markerEnd: 'url(#arrowhead-exec)', opacity: 1 };
+}
+
+/**
+ * Build a smooth cubic-bezier path string from dagre waypoints.
+ * Dagre returns 3+ collinear-ish points; we turn them into a smooth spline.
+ */
+function pointsToPath(points, offsetY) {
+    if (!points || points.length === 0) return '';
+    if (points.length === 1) {
+        return `M ${points[0].x} ${points[0].y + offsetY}`;
+    }
+    // Move to first point
+    let d = `M ${points[0].x} ${points[0].y + offsetY}`;
+    if (points.length === 2) {
+        d += ` L ${points[1].x} ${points[1].y + offsetY}`;
+        return d;
+    }
+    // For 3+ points use cubic bezier with control points at 1/3 & 2/3 between segments
+    for (let i = 1; i < points.length - 1; i++) {
+        const x0 = points[i - 1].x, y0 = points[i - 1].y + offsetY;
+        const x1 = points[i].x,     y1 = points[i].y + offsetY;
+        const x2 = points[i + 1].x, y2 = points[i + 1].y + offsetY;
+        const cpx1 = x0 + (x1 - x0) * 0.67;
+        const cpy1 = y0 + (y1 - y0) * 0.67;
+        const cpx2 = x1 - (x2 - x1) * 0.33;
+        const cpy2 = y1 - (y2 - y1) * 0.33;
+        d += ` C ${cpx1} ${cpy1} ${cpx2} ${cpy2} ${x1} ${y1}`;
+    }
+    // Final segment to last point
+    const last = points[points.length - 1];
+    d += ` L ${last.x} ${last.y + offsetY}`;
+    return d;
 }
 
 function renderEdges(svg, g, defs) {
+    // Pre-compute edge counts per (from,to) pair for multi-edge offsetting
     const edgesByPair = {};
     edgesData.forEach((edge, idx) => {
         const key = `${edge.from}-${edge.to}`;
-        if (!edgesByPair[key]) {
-            edgesByPair[key] = [];
-        }
+        if (!edgesByPair[key]) edgesByPair[key] = [];
         edgesByPair[key].push({ ...edge, idx });
     });
-    
+
+    // Create per-width arrowhead markers (so marker scales with line thickness)
+    const widthsSeen = new Set();
+    edgesData.forEach(edge => {
+        if (edge.type === 'exec' && !edge.is_multi_node_step) {
+            const tlen = getThoughtLength(edge);
+            if (tlen > 0) {
+                widthsSeen.add(Math.round(thoughtToWidth(tlen)));
+            }
+        }
+    });
+    widthsSeen.forEach(w => {
+        const m = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+        m.setAttribute('id', `arrowhead-exec-w${w}`);
+        m.setAttribute('markerWidth',  String(6 + w));
+        m.setAttribute('markerHeight', String(6 + w));
+        m.setAttribute('refX', String(5 + w));
+        m.setAttribute('refY', String((4 + w) / 2));
+        m.setAttribute('orient', 'auto');
+        const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        p.setAttribute('d', `M0,0 L0,${4 + w} L${5 + w},${(4 + w) / 2} z`);
+        p.setAttribute('fill', '#7f8c8d');
+        m.appendChild(p);
+        defs.appendChild(m);
+    });
+
     g.edges().forEach(e => {
-        const edge = g.edge(e);
-        const edgeKey = `${e.v}-${e.w}`;
+        const edge      = g.edge(e);
+        const edgeKey   = `${e.v}-${e.w}`;
         const edgesInPair = edgesByPair[edgeKey] || [];
-        const edgeIndex = edgesInPair.findIndex(ed => ed.type === edge.type && ed.label === edge.label);
+        const edgeIndex = edgesInPair.findIndex(
+            ed => ed.type === edge.type && ed.label === edge.label
+        );
         const totalEdges = edgesInPair.length;
-        
+
         const edgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         edgeGroup.setAttribute('class', `edge ${edge.type}`);
-        
-        const style = calculateEdgeStyle(edge);
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+
+        const style  = calculateEdgeStyle(edge);
         const points = edge.points;
-        
+
         let offsetY = 0;
         if (totalEdges > 1) {
-            offsetY = (edgeIndex - (totalEdges - 1) / 2) * 15;
+            offsetY = (edgeIndex - (totalEdges - 1) / 2) * 14;
         }
-        
-        let d = `M ${points[0].x} ${points[0].y + offsetY}`;
-        for (let i = 1; i < points.length; i++) {
-            d += ` L ${points[i].x} ${points[i].y + offsetY}`;
-        }
-        
-        path.setAttribute('d', d);
-        path.setAttribute('stroke', style.stroke);
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d',            pointsToPath(points, offsetY));
+        path.setAttribute('stroke',       style.stroke);
         path.setAttribute('stroke-width', style.strokeWidth);
+        path.setAttribute('fill',         'none');
+        path.setAttribute('opacity',      style.opacity);
         if (style.strokeDasharray) {
             path.setAttribute('stroke-dasharray', style.strokeDasharray);
         }
         path.setAttribute('marker-end', style.markerEnd);
-        path.setAttribute('fill', 'none');
-        
+
         edgeGroup.appendChild(path);
-        
-        if (edge.label) {
+
+        // Step-number label (only on exec edges)
+        if (edge.label && edge.type === 'exec') {
+            const midIdx   = Math.floor(points.length / 2);
+            const midPoint = points[midIdx];
             const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            const midPoint = points[Math.floor(points.length / 2)];
             text.setAttribute('x', midPoint.x);
             text.setAttribute('y', midPoint.y + offsetY - 5);
             text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('font-size',   '10');
+            text.setAttribute('fill',        '#7f8c8d');
             text.textContent = edge.label;
             edgeGroup.appendChild(text);
         }
-        
+
         svg.appendChild(edgeGroup);
     });
 }
 
 // ==================== Node Rendering ====================
+function makeNodeRect(node, fillAttr) {
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x',      node.x - node.width  / 2);
+    rect.setAttribute('y',      node.y - node.height / 2);
+    rect.setAttribute('width',  node.width);
+    rect.setAttribute('height', node.height);
+    rect.setAttribute('rx',     '5');
+    rect.setAttribute('ry',     '5');
+    rect.setAttribute('fill',   fillAttr);
+    // Always set explicit stroke so SVG overrides CSS default
+    if (node.has_failure) {
+        rect.setAttribute('stroke',       '#e74c3c');
+        rect.setAttribute('stroke-width', '3');
+    } else {
+        rect.setAttribute('stroke',       '#2c3e50');
+        rect.setAttribute('stroke-width', '1.5');
+    }
+    return rect;
+}
+
 function renderNodes(svg, g, defs) {
     g.nodes().forEach(nodeId => {
-        const node = g.node(nodeId);
+        const node      = g.node(nodeId);
         const nodeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        nodeGroup.setAttribute('class', 'node');
-        nodeGroup.setAttribute('data-id', nodeId);
+        nodeGroup.setAttribute('class',        'node');
+        nodeGroup.setAttribute('data-id',      nodeId);
         nodeGroup.setAttribute('data-tooltip', node.tooltip);
-        
-        if (node.colors.length > 1) {
-            const gradId = `grad-${nodeId.replace(/[^a-zA-Z0-9]/g, '')}`;
-            const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+
+        if (node.colors && node.colors.length > 1) {
+            const gradId = `grad-${nodeId.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            const grad   = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
             grad.setAttribute('id', gradId);
-            grad.setAttribute('x1', '0%');
-            grad.setAttribute('y1', '0%');
-            grad.setAttribute('x2', '100%');
-            grad.setAttribute('y2', '0%');
-            
+            grad.setAttribute('x1', '0%'); grad.setAttribute('y1', '0%');
+            grad.setAttribute('x2', '100%'); grad.setAttribute('y2', '0%');
             node.colors.forEach((color, i) => {
-                const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-                stop1.setAttribute('offset', `${i / node.colors.length * 100}%`);
-                stop1.setAttribute('stop-color', color);
-                grad.appendChild(stop1);
-                
-                const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-                stop2.setAttribute('offset', `${(i + 1) / node.colors.length * 100}%`);
-                stop2.setAttribute('stop-color', color);
-                grad.appendChild(stop2);
+                const s1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                s1.setAttribute('offset',     `${i / node.colors.length * 100}%`);
+                s1.setAttribute('stop-color', color);
+                grad.appendChild(s1);
+                const s2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                s2.setAttribute('offset',     `${(i + 1) / node.colors.length * 100}%`);
+                s2.setAttribute('stop-color', color);
+                grad.appendChild(s2);
             });
-            
             defs.appendChild(grad);
-            
-            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', node.x - node.width / 2);
-            rect.setAttribute('y', node.y - node.height / 2);
-            rect.setAttribute('width', node.width);
-            rect.setAttribute('height', node.height);
-            rect.setAttribute('fill', `url(#${gradId})`);
-            
-            // Add thick red border for failed actions
-            if (node.has_failure) {
-                rect.setAttribute('stroke', '#e74c3c');
-                rect.setAttribute('stroke-width', '4');
-            }
-            
-            nodeGroup.appendChild(rect);
+            nodeGroup.appendChild(makeNodeRect(node, `url(#${gradId})`));
         } else {
-            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', node.x - node.width / 2);
-            rect.setAttribute('y', node.y - node.height / 2);
-            rect.setAttribute('width', node.width);
-            rect.setAttribute('height', node.height);
-            rect.setAttribute('fill', node.color);
-            
-            // Add thick red border for failed actions
-            if (node.has_failure) {
-                rect.setAttribute('stroke', '#e74c3c');
-                rect.setAttribute('stroke-width', '4');
-            }
-            
-            nodeGroup.appendChild(rect);
+            nodeGroup.appendChild(makeNodeRect(node, node.color || '#CFE0F6'));
         }
         
         // Add triangular "hat" for nodes that had cd command stripped
@@ -331,14 +391,46 @@ function renderNodes(svg, g, defs) {
                      `L ${centerX - hatSize} ${topY} ` +
                      `L ${centerX + hatSize} ${topY} Z`;
             triangle.setAttribute('d', d);
-            triangle.setAttribute('fill', '#f39c12');  // Orange color for cd indicator
+            triangle.setAttribute('fill', '#f39c12');
             triangle.setAttribute('stroke', '#e67e22');
             triangle.setAttribute('stroke-width', '1.5');
             
             nodeGroup.appendChild(triangle);
         }
+
+        // Add observation indicator rectangle (if enabled and node has observation)
+        if (settings.showObservation && node.observation_length > 0) {
+            const obsWidth = Math.min(Math.max(node.observation_length / 50, 3), 12);
+            const obsHeight = node.height * 0.7;
+            const rightX = node.x + node.width / 2;
+            const centerY = node.y;
+
+            const obsRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            obsRect.setAttribute('x',      rightX + 4);
+            obsRect.setAttribute('y',      centerY - obsHeight / 2);
+            obsRect.setAttribute('width',  obsWidth);
+            obsRect.setAttribute('height', obsHeight);
+            obsRect.setAttribute('rx',     '2');
+            obsRect.setAttribute('ry',     '2');
+
+            // Color based on outcome
+            let obsFill;
+            if (node.observation_outcome === 'success') {
+                obsFill = '#7defa7';
+            } else if (node.observation_outcome === 'failure') {
+                obsFill = '#ff8080';
+            } else {
+                obsFill = '#bdc3c7';
+            }
+            obsRect.setAttribute('fill',    obsFill);
+            obsRect.setAttribute('opacity', '0.85');
+            obsRect.setAttribute('stroke', '#2c3e50');
+            obsRect.setAttribute('stroke-width', '0.5');
+
+            nodeGroup.appendChild(obsRect);
+        }
         
-        const lines = node.label.split('\\n');
+        const lines = node.displayLabel.split('\\n');
         const lineHeight = 16;
         const totalTextHeight = lines.length * lineHeight;
         const startY = node.y - totalTextHeight / 2 + lineHeight / 2;

@@ -69,15 +69,29 @@ function wireSearch() {
     });
 }
 
-// ── CD toggle ──────────────────────────────────────────────
+// ── CD toggle + new toggles ────────────────────────────────
 function wireToggle() {
-    document.getElementById('filterCdToggle').addEventListener('change', () => {
-        if (activeId) loadGraph(activeId);
+    ['filterCdToggle', 'thoughtQuotesToggle', 'nodeVerbosityToggle', 'observationToggle'].forEach(id => {
+        document.getElementById(id).addEventListener('change', () => {
+            if (activeId) loadGraph(activeId);
+        });
     });
 }
 
 function filterCd() {
     return document.getElementById('filterCdToggle').checked;
+}
+
+function thoughtQuotes() {
+    return document.getElementById('thoughtQuotesToggle').checked;
+}
+
+function nodeVerbosity() {
+    return document.getElementById('nodeVerbosityToggle').checked;
+}
+
+function showObservation() {
+    return document.getElementById('observationToggle').checked;
 }
 
 // ── Graph loading ──────────────────────────────────────────
@@ -110,7 +124,14 @@ function showLoading() {
 async function loadGraph(instanceId) {
     showLoading();
 
-    const url = `/api/graph?id=${encodeURIComponent(instanceId)}&filter_cd=${filterCd()}`;
+    const params = new URLSearchParams({
+        id:            instanceId,
+        filter_cd:     filterCd(),
+        thought_quotes: thoughtQuotes(),
+        node_verbosity: nodeVerbosity(),
+        show_observation: showObservation(),
+    });
+    const url = `/api/graph?${params.toString()}`;
 
     try {
         const res = await fetch(url);

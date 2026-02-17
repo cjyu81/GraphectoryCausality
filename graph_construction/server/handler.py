@@ -63,12 +63,17 @@ class GraphHandler(BaseHTTPRequestHandler):
                 self._api_graphs()
 
             elif path == "/api/graph":
-                instance_id = params.get("id",        [""])[0]
-                filter_cd   = params.get("filter_cd", ["true"])[0].lower() == "true"
+                instance_id       = params.get("id",              [""])[0]
+                filter_cd         = params.get("filter_cd",       ["true"])[0].lower() == "true"
+                thought_quotes    = params.get("thought_quotes",  ["false"])[0].lower() == "true"
+                node_verbosity    = params.get("node_verbosity",  ["true"])[0].lower() == "true"
+                show_observation  = params.get("show_observation", ["true"])[0].lower() == "true"
+                
                 if not instance_id:
                     self._error(400, "Missing ?id= parameter")
                 else:
-                    self._api_graph(instance_id, filter_cd)
+                    self._api_graph(instance_id, filter_cd, thought_quotes,
+                                   node_verbosity, show_observation)
 
             else:
                 self._error(404, "Not found")
@@ -83,7 +88,8 @@ class GraphHandler(BaseHTTPRequestHandler):
         graphs = scan_trajectories(self.graphs_dir, self.eval_report_path)
         self._respond_json(graphs)
 
-    def _api_graph(self, instance_id: str, filter_cd: bool):
+    def _api_graph(self, instance_id: str, filter_cd: bool,
+                   thought_quotes: bool, node_verbosity: bool, show_observation: bool):
         traj_data = load_trajectory(self.graphs_dir, instance_id)
 
         G = build_graph(
@@ -94,7 +100,8 @@ class GraphHandler(BaseHTTPRequestHandler):
             filter_cd         = filter_cd,
         )
 
-        html = render_graph_html(G, filter_cd, self.assets_dir)
+        html = render_graph_html(G, filter_cd, thought_quotes, node_verbosity,
+                                 show_observation, self.assets_dir)
         self._respond(200, "text/html; charset=utf-8", html.encode())
 
     # ── Low-level helpers ───────────────────────────────────────────────

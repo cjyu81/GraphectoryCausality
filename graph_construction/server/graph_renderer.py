@@ -30,15 +30,9 @@ PHASE_COLORS = {
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def render_graph_html(G: nx.MultiDiGraph, filter_cd: bool,
-                      assets_dir: Path) -> str:
-    """Return a complete, self-contained HTML string for the graph.
-
-    Args:
-        G:           Built NetworkX graph.
-        filter_cd:   Whether cd-filtering was applied (shown in the UI).
-        assets_dir:  Directory containing graph_template.html, styles.css,
-                     and graph_renderer.js.
-    """
+                      thought_quotes: bool, node_verbosity: bool,
+                      show_observation: bool, assets_dir: Path) -> str:
+    """Return a complete, self-contained HTML string for the graph."""
     nodes_data = _prepare_nodes(G)
     edges_data = _prepare_edges(G)
 
@@ -49,6 +43,13 @@ def render_graph_html(G: nx.MultiDiGraph, filter_cd: bool,
         "node_count":        str(len(nodes_data)),
         "edge_count":        str(len(edges_data)),
         "metadata_comment":  f"Mode: {'cd filtered (▲ hat)' if filter_cd else 'cd as node'}",
+    }
+
+    # Render settings for JS
+    settings = {
+        "thoughtQuotes":   thought_quotes,
+        "nodeVerbosity":   node_verbosity,
+        "showObservation": show_observation,
     }
 
     template = _load(assets_dir / "graph_template.html")
@@ -69,6 +70,7 @@ def render_graph_html(G: nx.MultiDiGraph, filter_cd: bool,
     html = html.replace("{{NODES_DATA}}",   json.dumps(nodes_data))
     html = html.replace("{{EDGES_DATA}}",   json.dumps(edges_data))
     html = html.replace("{{PHASE_COLORS}}", json.dumps(PHASE_COLORS))
+    html = html.replace("{{SETTINGS}}",     json.dumps(settings))
 
     # Inline CSS and JS so the response is fully self-contained
     html = html.replace(
@@ -94,21 +96,30 @@ def _prepare_nodes(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
         args             = data.get("args", {}) or {}
         edit_status      = args.get("edit_status",     "") if isinstance(args, dict) else ""
         command_outcome  = args.get("command_outcome", "") if isinstance(args, dict) else ""
-        # A node is marked as failed if either the edit operation or the command failed
         has_failure = bool(
             (edit_status     and str(edit_status).startswith("failure")) or
             (command_outcome and str(command_outcome).startswith("failure"))
         )
         has_cd = bool(data.get("has_cd", False))
 
+        # Observation data (for last node of each step)
+        obs_length = data.get("observation_length", 0)
+        obs_outcome = data.get("observation_outcome", "neutral")
+
         nodes.append({
-            "id":          node_id,
-            "label":       _make_label(data),
-            "tooltip":     _make_tooltip(data),
-            "color":       primary_color,
-            "colors":      colors,
-            "has_failure": has_failure,
-            "has_cd":      has_cd,
+            "id":                  node_id,
+            "label":               _make_label(data),         # verbosity will be applied in JS
+            "label_verbose":       _make_label_verbose(data), # full version
+            "label_minimal":       _make_label_minimal(data), # minimal version
+            "tooltip":             _make_tooltip(data),
+            "color":               primary_color,
+            "colors":              colors,
+            "has_failure":         has_failure,
+            "has_cd":              has_cd,
+            "observation_length":  obs_length,
+            "observation_outcome": obs_outcome,
+            "tool":                data.get("tool", ""),
+            "subcommand":          data.get("subcommand", ""),
         })
     return nodes
 
@@ -127,18 +138,36 @@ def _node_colors(data: dict) -> list[str]:
     return [PHASE_COLORS.get(ph, PHASE_COLORS["general"]) for ph in result]
 
 
+def _make_label_minimal(data: dict) -> str:
+    """Minimal label: just the action verb, nothing else."""
+    tool       = (data.get("tool")       or "").strip()
+    subcommand = (data.get("subcommand") or "").strip()
+    command    = (data.get("command")    or "").strip()
+    
+    # SPECIAL CASE: str_replace_editor → show subcommand alone
+    if tool == "str_replace_editor" and subcommand:
+        return subcommand
+    
+    if tool and subcommand:
+        return subcommand
+    elif tool:
+        return tool
+    elif command:
+        first_token = command.split()[0] if command.split() else command
+        return first_token[:20]
+    else:
+        raw_label = (data.get("label") or "").strip()
+        parts = raw_label.splitlines()[0].split()
+        return " ".join(parts[:2])[:30] if len(parts) >= 2 else raw_label[:30]
+
+
+def _make_label_verbose(data: dict) -> str:
+    """Full verbose label: action + step + path + range."""
+    return _make_label(data)  # Current _make_label is already verbose
+
+
 def _make_label(data: dict) -> str:
-    """Short multi-line display label for a node.
-
-    Line 1 – action title:
-              • tool nodes  → subcommand verb (e.g. "view", "str_replace", "create")
-              • shell nodes → command verb    (e.g. "python", "grep")
-    Line 2 – step index(es)
-    Line 3 – abbreviated file path or key arg (if available)
-    Line 4 – view range (if available)
-
-    Success/failure markers (✓/✗) are appended to Line 1.
-    """
+    """Default label (currently verbose; will be swapped by verbosity switch in JS)."""
     lines = []
 
     tool       = (data.get("tool")       or "").strip()
@@ -147,27 +176,26 @@ def _make_label(data: dict) -> str:
     raw_label  = (data.get("label")      or "").strip()
     args       = data.get("args", {}) or {}
 
-    # ── Line 1: concise action title ────────────────────────────────────────
-    if tool and subcommand:
-        # Show only the subcommand verb — it's the meaningful action
-        # (e.g. "view", "str_replace", "create", "bash")
+    # ── Line 1: action title ─────────────────────────────────────────────────
+    # SPECIAL CASE: str_replace_editor → show subcommand alone (not "editor: view")
+    if tool == "str_replace_editor" and subcommand:
+        base = subcommand
+    elif tool and subcommand:
         base = subcommand
     elif tool:
         base = tool
     elif command:
-        # bare shell command – only the first token (verb), capped at 20 chars
         first_token = command.split()[0] if command.split() else command
         base = first_token[:20]
     elif raw_label:
-        # Last-resort fallback: first two tokens of the raw label
         parts = raw_label.splitlines()[0].split()
-        base = " ".join(parts[:2])[:30]
+        base = " ".join(parts[:2])[:30] if len(parts) >= 2 else raw_label[:30]
         if len(raw_label.splitlines()[0]) > 30:
             base += "…"
     else:
         base = "action"
 
-    # Outcome badge — prefer edit_status, fall back to command_outcome
+    # Outcome badge
     if isinstance(args, dict):
         edit_status      = args.get("edit_status", "")
         command_outcome  = args.get("command_outcome", "")
@@ -197,8 +225,6 @@ def _make_label(data: dict) -> str:
             parts = [pt for pt in p.split("/") if pt]
             short = ("…/" + "/".join(parts[-2:])) if len(parts) > 2 else p
             lines.append(short[:35] + ("…" if len(short) > 35 else ""))
-
-        # For shell commands with _raw args, show a brief excerpt
         elif args.get("_raw"):
             raw = str(args["_raw"])
             lines.append(raw[:28] + ("…" if len(raw) > 28 else ""))
@@ -345,6 +371,7 @@ def _make_tooltip(data: dict) -> str:
 # ── Edge preparation ────────────────────────────────────────────────────────
 
 def _prepare_edges(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
+    """Serialise edges for the JS renderer with both thought length variants."""
     edges = []
 
     for u, v, _k, d in G.edges(keys=True, data=True):
@@ -352,29 +379,27 @@ def _prepare_edges(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
         edge_label       = str(d.get("label", ""))
         is_first_in_step = bool(d.get("is_first_in_step", False))
 
-        thought_length   = 0
-        is_multi_node    = False
-
         if etype == "exec":
-            u_steps    = set(G.nodes[u].get("step_indices", []))
-            v_steps    = set(G.nodes[v].get("step_indices", []))
-            u_thoughts = G.nodes[u].get("thought_lengths", [])
+            thought_len_raw   = int(d.get("thought_length_raw", 0))
+            thought_len_clean = int(d.get("thought_length_clean", 0))
 
-            common = u_steps & v_steps
-            if common:
-                is_multi_node  = True
-                thought_length = 0
-            elif is_first_in_step and u_thoughts:
-                thought_length = u_thoughts[-1]
+            u_steps = set(G.nodes[u].get("step_indices", []))
+            v_steps = set(G.nodes[v].get("step_indices", []))
+            is_multi_node = bool(u_steps & v_steps) and not is_first_in_step
+        else:
+            thought_len_raw   = 0
+            thought_len_clean = 0
+            is_multi_node     = False
 
         edges.append({
-            "from":             u,
-            "to":               v,
-            "type":             etype,
-            "label":            edge_label if etype == "exec" else "",
-            "thought_length":   thought_length,
-            "is_multi_node_step": is_multi_node,
-            "is_first_in_step": is_first_in_step,
+            "from":                u,
+            "to":                  v,
+            "type":                etype,
+            "label":               edge_label if etype == "exec" else "",
+            "thought_length_raw":  thought_len_raw,
+            "thought_length_clean": thought_len_clean,
+            "is_multi_node_step":  is_multi_node,
+            "is_first_in_step":    is_first_in_step,
         })
 
     return edges
