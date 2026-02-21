@@ -6,6 +6,7 @@ Builds trajectory graphs from agent execution traces (SWE-agent and OpenHands).
 
 import json
 import os
+import re
 import hashlib
 import networkx as nx
 from pathlib import Path
@@ -25,6 +26,66 @@ except ImportError:
 
 
 FONT_FAMILY = os.environ.get("GRAPH_FONT", "DejaVu Sans, Arial, sans-serif")
+
+# ── Thought-length helpers ──────────────────────────────────────────────────
+
+def compute_thought_length_raw(thought: str) -> int:
+    """Raw character count of thought text."""
+    return len(thought or "")
+
+
+def compute_thought_length_clean(thought: str) -> int:
+    """Character count excluding text inside quotes/backticks.
+
+    Strips content inside:
+      - "..."  (double quotes)
+      - '...'  (single quotes)
+      - `...`  (single backtick)
+      - ```...``` (triple backtick)
+    """
+    if not thought:
+        return 0
+    s = re.sub(r'```.*?```', '', thought, flags=re.DOTALL)
+    s = re.sub(r'`[^`]*`', '', s)
+    s = re.sub(r'"[^"]*"', '', s)
+    s = re.sub(r"'[^']*'", '', s)
+    return len(s)
+
+
+# ── Outcome detection helper ────────────────────────────────────────────────
+
+def detect_observation_outcome(observation: str) -> str:
+    """Return 'success', 'failure', or 'neutral' based on observation content."""
+    if not observation:
+        return "neutral"
+
+    obs_lower = observation.lower()
+
+    failure_signs = [
+        "traceback (most recent call last)",
+        "error:",
+        "exception:",
+        "failed",
+        "failure",
+        "assertion",
+        "syntaxerror",
+        "nameerror",
+        "typeerror",
+    ]
+    if any(sign in obs_lower for sign in failure_signs):
+        return "failure"
+
+    success_signs = [
+        "success",
+        "passed",
+        "ok",
+        "has been edited",
+        "created successfully",
+    ]
+    if any(sign in obs_lower for sign in success_signs):
+        return "success"
+
+    return "neutral"
 
 
 # -------------------- Helpers --------------------
@@ -137,21 +198,27 @@ class GraphBuilder:
 
         return node_key
 
-    def add_execution_edge(self, node_key, step_idx, is_first_in_step=False):
+    def add_execution_edge(self, node_key, step_idx, is_first_in_step=False,
+                           thought_length_raw: int = 0,
+                           thought_length_clean: int = 0):
         """Add execution edge from previous node to current node.
 
         Args:
             node_key: Target node key
             step_idx: Step index for edge label
             is_first_in_step: Whether this is the first edge in this trajectory step
+            thought_length_raw: Raw character count of the thought for this step
+            thought_length_clean: Character count with quoted text stripped
         """
         if self.previous_node:
             self.G.add_edge(
-                self.previous_node, 
-                node_key, 
-                label=str(step_idx), 
+                self.previous_node,
+                node_key,
+                label=str(step_idx),
                 type="exec",
-                is_first_in_step=is_first_in_step
+                is_first_in_step=is_first_in_step,
+                thought_length_raw=thought_length_raw,
+                thought_length_clean=thought_length_clean,
             )
 
     def update_previous_node(self, node_key):
@@ -265,22 +332,32 @@ def build_graph_from_sa_trajectory(traj_data, parser, instance_id, output_dir, e
     for step_idx, step in enumerate(trajectory):
         action_str = step.get("action", "")
         thought = step.get("thought", "") or ""
-        thought_length = len(thought)
+        observation = step.get("observation", "") or ""
+
+        thought_len_raw   = compute_thought_length_raw(thought)
+        thought_len_clean = compute_thought_length_clean(thought)
 
         # Handle explicit "think" steps (blank action)
         if action_str.strip() == "":
             node_key = builder.add_or_update_node(
                 node_label="think",
-                args={"thought_len": thought_length},
+                args={"thought_len": thought_len_raw},
                 flags={},
                 phase="general",
                 step_idx=step_idx,
                 tool=None,
                 command=None,
                 subcommand=None,
-                thought_length=thought_length
+                thought_length=thought_len_raw
             )
-            builder.add_execution_edge(node_key, step_idx)
+            builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
+            builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
+            builder.G.nodes[node_key]["observation_length"]  = len(observation)
+            builder.G.nodes[node_key]["observation_outcome"] = detect_observation_outcome(observation)
+            builder.add_execution_edge(node_key, step_idx,
+                                       is_first_in_step=True,
+                                       thought_length_raw=thought_len_raw,
+                                       thought_length_clean=thought_len_clean)
             builder.update_previous_node(node_key)
             builder.add_phase("general")
             continue
@@ -296,19 +373,17 @@ def build_graph_from_sa_trajectory(traj_data, parser, instance_id, output_dir, e
         filtered_commands = []
         
         if len(parsed_commands) > 1:
-            # Check if first command is cd
             first_cmd = parsed_commands[0]
             if first_cmd.get("command", "").strip().lower() == "cd":
                 has_cd = True
-                # Skip the cd command, process the rest
                 filtered_commands = parsed_commands[1:]
             else:
                 filtered_commands = parsed_commands
         else:
             filtered_commands = parsed_commands
         
-        # Track if this is the first node in this trajectory step
         is_first_in_step = True
+        node_keys_in_step = []
         
         for parsed in filtered_commands:
             tool = parsed.get("tool", "").strip() if parsed.get("tool") else ""
@@ -324,7 +399,7 @@ def build_graph_from_sa_trajectory(traj_data, parser, instance_id, output_dir, e
 
             phase = get_phase(tool, subcommand, command, args, builder.prev_phases)
 
-            edit_status = check_edit_status(tool, subcommand, args, step.get("observation", ""))
+            edit_status = check_edit_status(tool, subcommand, args, observation)
             if edit_status and isinstance(args, dict):
                 args["edit_status"] = edit_status
 
@@ -337,17 +412,28 @@ def build_graph_from_sa_trajectory(traj_data, parser, instance_id, output_dir, e
                 tool=tool,
                 command=command,
                 subcommand=subcommand,
-                thought_length=thought_length,
-                has_cd=has_cd  # Mark if cd was stripped
+                thought_length=thought_len_raw,
+                has_cd=has_cd
             )
-            
-            # Add edge - first edge in step gets thought length assigned
-            builder.add_execution_edge(node_key, step_idx, is_first_in_step=is_first_in_step)
+            builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
+            builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
+            node_keys_in_step.append(node_key)
+
+            builder.add_execution_edge(
+                node_key, step_idx,
+                is_first_in_step=is_first_in_step,
+                thought_length_raw=thought_len_raw if is_first_in_step else 0,
+                thought_length_clean=thought_len_clean if is_first_in_step else 0,
+            )
             builder.update_previous_node(node_key)
             builder.add_phase(phase)
-            
-            # After first node, subsequent nodes in same step are not "first"
             is_first_in_step = False
+
+        # Mark last node of this step with observation info
+        if node_keys_in_step:
+            last_node = node_keys_in_step[-1]
+            builder.G.nodes[last_node]["observation_length"]  = len(observation)
+            builder.G.nodes[last_node]["observation_outcome"] = detect_observation_outcome(observation)
 
     return builder.finalize_and_save(output_dir, instance_id, eval_report_path, template_dir, metadata_comment)
 
@@ -384,7 +470,9 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
         # Use action text only as a fallback when command string is empty
         action_str = action or ""
         thought = step.get("content", "") or ""
-        thought_length = len(thought)
+
+        thought_len_raw   = compute_thought_length_raw(thought)
+        thought_len_clean = compute_thought_length_clean(thought)
 
         tool_calls = step.get("tool_call_metadata", {}).get("model_response", {}).get("choices", [])
         if not tool_calls and "tool_call_metadata" in step:
@@ -443,6 +531,7 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
             filtered_commands = parsed_commands
         
         is_first_in_step = True
+        node_keys_in_step = []
 
         for parsed in filtered_commands:
             tool = parsed.get("tool", "").strip()
@@ -451,16 +540,22 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
             if tool == "think":
                 node_key = builder.add_or_update_node(
                     node_label="think",
-                    args={"thought_len": thought_length},
+                    args={"thought_len": thought_len_raw},
                     flags={},
                     phase="general",
                     step_idx=step_idx,
                     tool=None,
                     command=None,
                     subcommand=None,
-                    thought_length=thought_length
+                    thought_length=thought_len_raw
                 )
-                builder.add_execution_edge(node_key, step_idx, is_first_in_step=is_first_in_step)
+                builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
+                builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
+                node_keys_in_step.append(node_key)
+                builder.add_execution_edge(node_key, step_idx,
+                                           is_first_in_step=is_first_in_step,
+                                           thought_length_raw=thought_len_raw if is_first_in_step else 0,
+                                           thought_length_clean=thought_len_clean if is_first_in_step else 0)
                 builder.update_previous_node(node_key)
                 builder.add_phase("general")
                 is_first_in_step = False
@@ -478,7 +573,8 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
 
             phase = get_phase(tool, subcommand, command, args, builder.prev_phases)
 
-            edit_status = check_edit_status(tool, subcommand, args, step.get("content", ""))
+            observation = step.get("content", "") or ""
+            edit_status = check_edit_status(tool, subcommand, args, observation)
             if edit_status and isinstance(args, dict):
                 args["edit_status"] = edit_status
 
@@ -491,13 +587,26 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
                 tool=tool,
                 command=command,
                 subcommand=subcommand,
-                thought_length=thought_length,
+                thought_length=thought_len_raw,
                 has_cd=has_cd
             )
-            builder.add_execution_edge(node_key, step_idx, is_first_in_step=is_first_in_step)
+            builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
+            builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
+            node_keys_in_step.append(node_key)
+            builder.add_execution_edge(node_key, step_idx,
+                                       is_first_in_step=is_first_in_step,
+                                       thought_length_raw=thought_len_raw if is_first_in_step else 0,
+                                       thought_length_clean=thought_len_clean if is_first_in_step else 0)
             builder.update_previous_node(node_key)
             builder.add_phase(phase)
             is_first_in_step = False
+
+        # Mark last node of this step with observation info
+        if node_keys_in_step:
+            last_node = node_keys_in_step[-1]
+            obs_text = step.get("content", "") or ""
+            builder.G.nodes[last_node]["observation_length"]  = len(obs_text)
+            builder.G.nodes[last_node]["observation_outcome"] = detect_observation_outcome(obs_text)
 
         step_idx += 1
 
@@ -505,81 +614,78 @@ def build_graph_from_oh_trajectory(traj_data, parser, instance_id, output_dir, e
 
 
 def build_hierarchical_edges(G: nx.MultiDiGraph, localization_nodes):
-    """Build hierarchical edges between localization nodes based on file paths and ranges."""
-    path_nodes = []  # [(node_id, Path)]
-    range_nodes_by_path = defaultdict(list)  # path_str -> [(node_id, [start, end])]
+    """Add 'hier' edges between str_replace_editor view nodes based on file-path
+    containment and view-range nesting.
 
-    for node in localization_nodes:
-        data = G.nodes[node]
-        path = data.get("args", {}).get("path")
-        view_range = data.get("args", {}).get("view_range")
+    Hierarchy rules
+    ---------------
+    1. Directory containment: if node A views a directory (or file) that is a
+       prefix of the path viewed by node B, add A → B.
+    2. Range nesting within the same file: if node A views a range [a1, a2] and
+       node B views [b1, b2] with b1 >= a1 and b2 <= a2, add A → B.
+    3. Whole-file view → ranged view of the same file: if node A has no range
+       and node B views a range of the same file, add A → B.
+    """
+    path_nodes: list[tuple[str, list | None]] = []  # (node_key, view_range_or_None)
 
-        if path:
-            path_obj = Path(path)
-            if view_range is None:
-                path_nodes.append((node, path_obj))
-            elif (
-                isinstance(view_range, (list, tuple)) and
-                len(view_range) == 2 and
-                all(isinstance(x, int) for x in view_range)
-            ):
-                range_nodes_by_path[str(path_obj)].append((node, view_range))
-            else:
-                print(f"[WARN] Skipping invalid view_range for node {node}: {view_range}")
+    for node_key in localization_nodes:
+        data = G.nodes.get(node_key, {})
+        args = data.get("args", {}) or {}
+        if not isinstance(args, dict):
+            continue
+        path = args.get("path")
+        if not path:
+            continue
+        vr = args.get("view_range")
+        if isinstance(vr, (list, tuple)) and len(vr) == 2:
+            try:
+                vr = [int(vr[0]), int(vr[1])]
+            except (TypeError, ValueError):
+                vr = None
+        else:
+            vr = None
+        path_nodes.append((node_key, str(path), vr))
 
-    # --- 1) Path hierarchy by folder containment ---
-    for child_node, child_path in path_nodes:
-        best_parent_node = None
-        best_parent_path = None
-        for parent_node, parent_path in path_nodes:
-            if parent_node == child_node:
-                continue
-            if (len(parent_path.parts) < len(child_path.parts) and
-                child_path.parts[:len(parent_path.parts)] == parent_path.parts):
-                if best_parent_path is None or len(parent_path.parts) > len(best_parent_path.parts):
-                    best_parent_node = parent_node
-                    best_parent_path = parent_path
-        if best_parent_node:
-            G.add_edge(best_parent_node, child_node, type="hier")
+    added: set[tuple] = set()
 
-    # --- 2) Range nodes: handle nesting + link outermost ---
-    path_to_node = {str(p): n for n, p in path_nodes}
+    def _add(src, dst):
+        if src != dst and (src, dst) not in added:
+            G.add_edge(src, dst, type="hier", label="")
+            added.add((src, dst))
 
-    for path_str, range_nodes in range_nodes_by_path.items():
-        is_nested = {n: False for n, _ in range_nodes}
+    # Group by normalised path for range comparisons
+    by_path: dict[str, list] = defaultdict(list)
+    for node_key, path, vr in path_nodes:
+        by_path[path].append((node_key, vr))
 
-        # detect nesting: mark inner ranges
-        for i, (node_i, r_i) in enumerate(range_nodes):
-            for j, (node_j, r_j) in enumerate(range_nodes):
+    for path, entries in by_path.items():
+        whole  = [(nk, vr) for nk, vr in entries if vr is None]
+        ranged = [(nk, vr) for nk, vr in entries if vr is not None]
+
+        # Whole-file → ranged views of same file
+        for w_nk, _ in whole:
+            for r_nk, _ in ranged:
+                _add(w_nk, r_nk)
+
+        # Range nesting: outer range → inner range
+        for i, (nk_a, vr_a) in enumerate(ranged):
+            for j, (nk_b, vr_b) in enumerate(ranged):
                 if i == j:
                     continue
-                try:
-                    a1, a2 = r_i
-                    b1, b2 = r_j
-                    if b1 >= a1 and b2 <= a2:
-                        G.add_edge(node_i, node_j, type="hier")
-                        is_nested[node_j] = True
-                except Exception as e:
-                    print(f"[WARN] Failed to unpack ranges for nesting check: {r_i}, {r_j} ({e})")
+                if vr_b[0] >= vr_a[0] and vr_b[1] <= vr_a[1]:
+                    _add(nk_a, nk_b)
 
-        # link outermost ranges to:
-        #   - exact path node if exists
-        #   - else closest parent path node whose path contains this path
-        path_node = path_to_node.get(path_str)
-        if path_node:
-            for node, _ in range_nodes:
-                if not is_nested[node]:
-                    G.add_edge(path_node, node, type="hier")
-        else:
-            # No exact path node → find nearest ancestor
-            path_parts = Path(path_str).parts
-            best_ancestor_node = None
-            best_ancestor_depth = -1
-            for pn, pp in path_nodes:
-                if len(pp.parts) < len(path_parts) and path_parts[:len(pp.parts)] == pp.parts:
-                    if len(pp.parts) > best_ancestor_depth:
-                        best_ancestor_node = pn
-                        best_ancestor_depth = len(pp.parts)
-            for node, _ in range_nodes:
-                if not is_nested[node] and best_ancestor_node:
-                    G.add_edge(best_ancestor_node, node, type="hier")
+    # Directory/path prefix containment across different paths
+    path_list = list(by_path.keys())
+    for path_a in path_list:
+        for path_b in path_list:
+            if path_a == path_b:
+                continue
+            parts_a = [p for p in path_a.replace("\\", "/").split("/") if p]
+            parts_b = [p for p in path_b.replace("\\", "/").split("/") if p]
+            if (len(parts_a) < len(parts_b) and
+                    parts_b[:len(parts_a)] == parts_a):
+                # path_a is a parent dir of path_b
+                for nk_a, _ in by_path[path_a]:
+                    for nk_b, _ in by_path[path_b]:
+                        _add(nk_a, nk_b)

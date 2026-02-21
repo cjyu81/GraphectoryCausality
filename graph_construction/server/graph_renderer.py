@@ -108,9 +108,8 @@ def _prepare_nodes(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
 
         nodes.append({
             "id":                  node_id,
-            "label":               _make_label(data),         # verbosity will be applied in JS
-            "label_verbose":       _make_label_verbose(data), # full version
-            "label_minimal":       _make_label_minimal(data), # minimal version
+            "label":               _make_label(data),         # verbose label (used when verbosity on)
+            "label_minimal":       _make_label_minimal(data), # minimal label (used when verbosity off)
             "tooltip":             _make_tooltip(data),
             "color":               primary_color,
             "colors":              colors,
@@ -159,11 +158,6 @@ def _make_label_minimal(data: dict) -> str:
         raw_label = (data.get("label") or "").strip()
         parts = raw_label.splitlines()[0].split()
         return " ".join(parts[:2])[:30] if len(parts) >= 2 else raw_label[:30]
-
-
-def _make_label_verbose(data: dict) -> str:
-    """Full verbose label: action + step + path + range."""
-    return _make_label(data)  # Current _make_label is already verbose
 
 
 def _make_label(data: dict) -> str:
@@ -321,6 +315,19 @@ def _make_tooltip(data: dict) -> str:
             avg   = sum(thought_lengths) // len(thought_lengths)
             total = sum(thought_lengths)
             parts.append(_row("Thought len", f"avg {avg}, total {total} ({len(thought_lengths)} steps)"))
+
+    # ── Observation section ──────────────────────────────────────────────────
+    obs_length  = data.get("observation_length",  0)
+    obs_outcome = data.get("observation_outcome", "neutral")
+    if obs_length:
+        obs_color = {"success": "#7defa7", "failure": "#ff8080"}.get(obs_outcome, "#a0c4ff")
+        parts.append(_row("Observation len", str(obs_length)))
+        parts.append(
+            f'<div style="display:flex;gap:8px;margin:2px 0;">'
+            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">{_esc("Obs. status")}</span>'
+            f'<span style="color:{obs_color};font-weight:600;">{_esc(obs_outcome)}</span>'
+            f'</div>'
+        )
 
     # ── Outcome (shown before arguments for visibility) ──────────────────────
     args = data.get("args", {}) or {}

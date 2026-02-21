@@ -97,6 +97,7 @@ class GraphHandler(BaseHTTPRequestHandler):
             instance_id       = instance_id,
             eval_report_path  = self.eval_report_path,
             cmd_parser        = self.cmd_parser,
+            graphs_dir        = self.graphs_dir,
             filter_cd         = filter_cd,
         )
 

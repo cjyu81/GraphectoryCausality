@@ -10,7 +10,6 @@ Responsible for:
 import json
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 # Ensure parent directory is importable
@@ -20,99 +19,14 @@ from buildGraph import (
     GraphBuilder as _GraphBuilderBase,
     determine_resolution_status,
     check_edit_status,
+    compute_thought_length_raw,
+    compute_thought_length_clean,
+    detect_observation_outcome,
+    build_hierarchical_edges,
 )
 
 import networkx as nx
 
-
-# ── Thought-length helpers ──────────────────────────────────────────────────
-
-def compute_thought_length_raw(thought: str) -> int:
-    """Raw character count of thought text."""
-    return len(thought or "")
-
-
-def compute_thought_length_clean(thought: str) -> int:
-    """Character count excluding text inside quotes/backticks.
-    
-    Strips content inside:
-      - "..."  (double quotes)
-      - '...'  (single quotes)
-      - `...`  (single backtick)
-      - ```...``` (triple backtick)
-    """
-    import re
-    if not thought:
-        return 0
-    
-    # Remove triple backticks first (greedy)
-    s = re.sub(r'```.*?```', '', thought, flags=re.DOTALL)
-    # Remove single backticks
-    s = re.sub(r'`[^`]*`', '', s)
-    # Remove double-quoted strings
-    s = re.sub(r'"[^"]*"', '', s)
-    # Remove single-quoted strings
-    s = re.sub(r"'[^']*'", '', s)
-    
-    return len(s)
-
-
-# ── Outcome detection helper ────────────────────────────────────────────────
-
-def detect_observation_outcome(observation: str) -> str:
-    """Return 'success', 'failure', or 'neutral' based on observation content."""
-    if not observation:
-        return "neutral"
-    
-    obs_lower = observation.lower()
-    
-    # Strong failure indicators
-    failure_signs = [
-        "traceback (most recent call last)",
-        "error:",
-        "exception:",
-        "failed",
-        "failure",
-        "assertion",
-        "syntaxerror",
-        "nameerror",
-        "typeerror",
-    ]
-    if any(sign in obs_lower for sign in failure_signs):
-        return "failure"
-    
-    # Success indicators
-    success_signs = [
-        "success",
-        "passed",
-        "ok",
-        "has been edited",
-        "created successfully",
-    ]
-    if any(sign in obs_lower for sign in success_signs):
-        return "success"
-    
-    return "neutral"
-
-
-class GraphBuilder(_GraphBuilderBase):
-    """Extends the base GraphBuilder to store thought_length on exec edges."""
-
-    def add_execution_edge(self, node_key: str, step_idx: int,
-                           is_first_in_step: bool = False,
-                           thought_length_raw: int = 0,
-                           thought_length_clean: int = 0):
-        if self.previous_node is None:
-            return
-        self.G.add_edge(
-            self.previous_node,
-            node_key,
-            label=str(step_idx),
-            type="exec",
-            is_first_in_step=is_first_in_step,
-            thought_length_raw=thought_length_raw,
-            thought_length_clean=thought_length_clean,
-        )
 
 # ── Test-outcome helpers ─────────────────────────────────────────────────────
 
@@ -151,84 +65,11 @@ def check_command_outcome(command: str, observation: str,
     return None
 
 
-# ── Local hierarchy builder ──────────────────────────────────────────────────
+# ── Extended GraphBuilder ────────────────────────────────────────────────────
 
-def build_hierarchical_edges(G, localization_nodes: list) -> None:
-    """Add 'hier' edges between str_replace_editor view nodes based on file-path
-    containment and view-range nesting.
-
-    Hierarchy rules
-    ---------------
-    1. Directory containment: if node A views a directory (or file) that is a
-       prefix of the path viewed by node B, add A → B.
-    2. Range nesting within the same file: if node A views a range [a1, a2] and
-       node B views [b1, b2] with b1 >= a1 and b2 <= a2, add A → B.
-    3. Whole-file view → ranged view of the same file: if node A has no range
-       and node B views a range of the same file, add A → B.
-    """
-    path_nodes: list[tuple[str, list | None]] = []  # (node_key, view_range_or_None)
-
-    for node_key in localization_nodes:
-        data = G.nodes.get(node_key, {})
-        args = data.get("args", {}) or {}
-        if not isinstance(args, dict):
-            continue
-        path = args.get("path")
-        if not path:
-            continue
-        vr = args.get("view_range")
-        if isinstance(vr, (list, tuple)) and len(vr) == 2:
-            try:
-                vr = [int(vr[0]), int(vr[1])]
-            except (TypeError, ValueError):
-                vr = None
-        else:
-            vr = None
-        path_nodes.append((node_key, str(path), vr))
-
-    added: set[tuple] = set()
-
-    def _add(src, dst):
-        if src != dst and (src, dst) not in added:
-            G.add_edge(src, dst, type="hier", label="")
-            added.add((src, dst))
-
-    # Group by normalised path for range comparisons
-    by_path: dict[str, list] = defaultdict(list)
-    for node_key, path, vr in path_nodes:
-        by_path[path].append((node_key, vr))
-
-    for path, entries in by_path.items():
-        whole    = [(nk, vr) for nk, vr in entries if vr is None]
-        ranged   = [(nk, vr) for nk, vr in entries if vr is not None]
-
-        # Whole-file → ranged views of same file
-        for w_nk, _ in whole:
-            for r_nk, _ in ranged:
-                _add(w_nk, r_nk)
-
-        # Range nesting: outer range → inner range
-        for i, (nk_a, vr_a) in enumerate(ranged):
-            for j, (nk_b, vr_b) in enumerate(ranged):
-                if i == j:
-                    continue
-                if vr_b[0] >= vr_a[0] and vr_b[1] <= vr_a[1]:
-                    _add(nk_a, nk_b)
-
-    # Directory/path prefix containment across different paths
-    path_list = list(by_path.keys())
-    for path_a in path_list:
-        for path_b in path_list:
-            if path_a == path_b:
-                continue
-            parts_a = [p for p in path_a.replace("\\", "/").split("/") if p]
-            parts_b = [p for p in path_b.replace("\\", "/").split("/") if p]
-            if (len(parts_a) < len(parts_b) and
-                    parts_b[:len(parts_a)] == parts_a):
-                # path_a is a parent dir of path_b
-                for nk_a, _ in by_path[path_a]:
-                    for nk_b, _ in by_path[path_b]:
-                        _add(nk_a, nk_b)
+class GraphBuilder(_GraphBuilderBase):
+    """Extends the base GraphBuilder – no overrides needed; inherits everything."""
+    pass
 
 
 # ── Directory scanning ──────────────────────────────────────────────────────
@@ -316,12 +157,88 @@ def load_trajectory(graphs_dir: Path, instance_id: str) -> dict:
     )
 
 
+def _find_instance_config(graphs_dir: Path, instance_id: str) -> Path | None:
+    """Locate the config YAML for a given instance.
+
+    Expected location: {graphs_dir}/{instance_id}/{instance_id}.config.yaml
+    Falls back to a recursive search within graphs_dir if not found at the
+    canonical location.
+    """
+    # Canonical path (matches the observed folder structure)
+    canonical = graphs_dir / instance_id / f"{instance_id}.config.yaml"
+    if canonical.exists():
+        return canonical
+
+    # Fallback: recursive glob (handles unexpected nesting depths)
+    for match in graphs_dir.rglob(f"{instance_id}.config.yaml"):
+        return match
+
+    return None
+
+
+def _make_parser_for_instance(base_parser, graphs_dir: Path, instance_id: str):
+    """Return a CommandParser loaded with the instance's tool config.
+
+    Creates a fresh CommandParser and copies the base parser's tool_map as a
+    starting point, then overlays the instance-specific config YAML on top.
+    This avoids mutating the shared base parser between requests.
+    """
+    import copy
+    from commandParser import CommandParser
+
+    parser = CommandParser()
+    # Start from whatever the base already knows (may be empty)
+    parser.tool_map = copy.deepcopy(base_parser.tool_map)
+
+    config_path = _find_instance_config(graphs_dir, instance_id)
+    if config_path:
+        parser.load_tool_yaml_files([str(config_path)])
+        print(f"  [config] Loaded {config_path.name}")
+    else:
+        print(f"  [config] No config YAML found for '{instance_id}' – using base parser")
+
+    return parser
+
+
 # ── Graph construction ──────────────────────────────────────────────────────
 
 def build_graph(traj_data: dict, instance_id: str,
                 eval_report_path: str, cmd_parser,
+                graphs_dir: Path | None = None,
                 filter_cd: bool = True):
-    """Build and return a NetworkX MultiDiGraph from *traj_data*."""
+    """Build and return a NetworkX MultiDiGraph from *traj_data*.
+
+    The instance's tool config YAML is auto-discovered from:
+        {graphs_dir}/{instance_id}/{instance_id}.config.yaml
+
+    and loaded into a fresh per-request CommandParser so that the shared
+    base parser (cmd_parser) is never mutated between concurrent requests.
+
+    Args:
+        traj_data:        Raw trajectory dict (from .traj JSON file).
+        instance_id:      Instance identifier, e.g. 'astropy__astropy-7166'.
+        eval_report_path: Path to the evaluation report JSON.
+        cmd_parser:       Base CommandParser instance (tool_map may be empty).
+        graphs_dir:       Root directory containing per-instance sub-folders.
+                          Required for config YAML discovery; if None the base
+                          parser is used as-is.
+        filter_cd:        Strip leading ``cd`` commands and mark nodes with ▲.
+
+    Raises:
+        ValueError: if cmd_parser is None.
+    """
+    if cmd_parser is None:
+        raise ValueError(
+            "cmd_parser must be a CommandParser instance. "
+            "Pass a configured CommandParser from live_graph_server.setup_cmd_parser()."
+        )
+
+    # Build a per-instance parser loaded with this trajectory's config YAML
+    if graphs_dir is not None:
+        instance_parser = _make_parser_for_instance(cmd_parser, graphs_dir, instance_id)
+    else:
+        instance_parser = cmd_parser
+
     try:
         from mapPhase import get_phase
     except ImportError:
@@ -333,10 +250,10 @@ def build_graph(traj_data: dict, instance_id: str,
     prev_phases_list: list[str] = []
 
     for step_idx, step in enumerate(trajectory):
-        action_str     = step.get("action", "")
-        thought        = step.get("thought", "") or ""
-        observation    = step.get("observation", "") or ""
-        
+        action_str  = step.get("action", "")
+        thought     = step.get("thought", "") or ""
+        observation = step.get("observation", "") or ""
+
         # Compute both thought lengths (for user-controlled switch)
         thought_len_raw   = compute_thought_length_raw(thought)
         thought_len_clean = compute_thought_length_clean(thought)
@@ -355,14 +272,11 @@ def build_graph(traj_data: dict, instance_id: str,
                 thought_length     = thought_len_raw,
                 has_cd             = False,
             )
-            # Store both lengths on the node itself for renderer access
             builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
-            
-            # Think nodes are always last (and only) in their step
-            builder.G.nodes[node_key]["observation_length"] = len(observation)
+            builder.G.nodes[node_key]["observation_length"]  = len(observation)
             builder.G.nodes[node_key]["observation_outcome"] = detect_observation_outcome(observation)
-            
+
             builder.add_execution_edge(
                 node_key, step_idx,
                 is_first_in_step=True,
@@ -375,10 +289,7 @@ def build_graph(traj_data: dict, instance_id: str,
             continue
 
         # ── Parse action string ────────────────────────────────────────
-        if cmd_parser is None:
-            parsed_commands = _fallback_parse(action_str)
-        else:
-            parsed_commands = cmd_parser.parse(action_str)
+        parsed_commands = instance_parser.parse(action_str)
 
         if not parsed_commands:
             continue
@@ -392,7 +303,7 @@ def build_graph(traj_data: dict, instance_id: str,
                 parsed_commands = parsed_commands[1:]
 
         # ── Create nodes / edges ───────────────────────────────────────
-        is_first_in_step = True
+        is_first_in_step  = True
         node_keys_in_step = []
 
         for parsed in parsed_commands:
@@ -436,11 +347,11 @@ def build_graph(traj_data: dict, instance_id: str,
                 thought_length = thought_len_raw,
                 has_cd         = has_cd,
             )
-            
+
             # Store both thought lengths on node
             builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
-            
+
             node_keys_in_step.append(node_key)
 
             # First edge in each step carries thought; subsequent intra-step edges carry 0
@@ -459,7 +370,7 @@ def build_graph(traj_data: dict, instance_id: str,
         # ── Mark last node of this step with observation info ─────────
         if node_keys_in_step:
             last_node = node_keys_in_step[-1]
-            builder.G.nodes[last_node]["observation_length"] = len(observation)
+            builder.G.nodes[last_node]["observation_length"]  = len(observation)
             builder.G.nodes[last_node]["observation_outcome"] = detect_observation_outcome(observation)
 
     # ── Post-processing ────────────────────────────────────────────────
@@ -476,33 +387,3 @@ def build_graph(traj_data: dict, instance_id: str,
         builder.G.graph["debug_difficulty"] = "unknown"
 
     return builder.G
-
-
-# ── Fallback parser ────────────────────────────────────────────────────────
-
-def _fallback_parse(action_str: str) -> list[dict]:
-    """Minimal parser used when CommandParser is unavailable.
-
-    Splits on ``&&`` and returns one parsed-command dict per part.
-    ``command`` holds the first token (verb) for node labelling;
-    ``command_full`` holds the entire part for tooltip display.
-    ``args`` is a dict with a ``_raw`` key carrying the remainder of the
-    command (everything after the verb) so the tooltip can show context.
-    """
-    results = []
-    for part in action_str.split("&&"):
-        part = part.strip()
-        if not part:
-            continue
-        tokens = part.split()
-        verb   = tokens[0] if tokens else part
-        rest   = " ".join(tokens[1:]) if len(tokens) > 1 else ""
-        args   = {"_raw": rest} if rest else {}
-        results.append({
-            "command":    verb,         # short verb only – used for node_label
-            "tool":       "",
-            "subcommand": "",
-            "args":       args,
-            "flags":      {},
-        })
-    return results

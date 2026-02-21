@@ -18,7 +18,7 @@ function layoutGraph() {
     // Add nodes with sizing based on label content.
     // Apply verbosity setting to choose which label to use for sizing.
     nodesData.forEach(node => {
-        const label = settings.nodeVerbosity ? node.label_verbose : node.label_minimal;
+        const label = settings.nodeVerbosity ? node.label : node.label_minimal;
         node.displayLabel = label;  // Store for rendering
         
         const lines = label.split('\\n');

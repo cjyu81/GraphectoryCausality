@@ -54,26 +54,20 @@ Examples
 
 
 def setup_cmd_parser():
-    """Return a CommandParser, or None if the module is unavailable."""
+    """Return a bare CommandParser instance.
+
+    Tool configs are discovered per-instance from the trajectory folder
+    ({graphs_dir}/{instance_id}/{instance_id}.config.yaml) and loaded
+    at request time in graph_builder.build_graph().
+
+    Raises SystemExit if commandParser cannot be imported.
+    """
     try:
-        from commandParser import CommandParser
-        parser = CommandParser()
-
-        tool_configs = [
-            "data/SWE-agent/tools/edit_anthropic/config.yaml",
-            "data/SWE-agent/tools/review_on_submit_m/config.yaml",
-            "data/SWE-agent/tools/registry/config.yaml",
-        ]
-        for cfg in tool_configs:
-            if Path(cfg).exists():
-                parser.load_tool_yaml_files([cfg])
-                break
-
-        return parser
-
+        from graph_construction.commandParser import CommandParser
+        return CommandParser()
     except ImportError:
-        print("[WARN] commandParser not found – using built-in fallback parser")
-        return None
+        print("[ERROR] commandParser module not found – cannot continue.")
+        sys.exit(1)
 
 
 def main() -> int:
@@ -108,6 +102,8 @@ def main() -> int:
     print(f"  Graphs dir   : {graphs_dir.absolute()}")
     print(f"  Eval report  : {eval_report.absolute()}")
     print(f"  Assets dir   : {assets_dir.absolute()}")
+    print(f"  Tool configs : auto-discovered from each instance folder")
+    print(f"                 (<graphs_dir>/<id>/<id>.config.yaml)")
     print(f"  URL          : http://localhost:{args.port}")
     print(f"{'─'*60}\n")
     print("  Press Ctrl+C to stop.\n")
