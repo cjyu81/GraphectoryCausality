@@ -384,6 +384,12 @@ function renderNodes(svg, g, defs) {
         nodeGroup.setAttribute('data-id',      nodeId);
         nodeGroup.setAttribute('data-tooltip', node.tooltip);
 
+        // Left-click opens the detail sidebar for this node
+        nodeGroup.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openSidebar(node);
+        });
+
         if (node.colors && node.colors.length > 1) {
             const gradId = `grad-${nodeId.replace(/[^a-zA-Z0-9]/g, '_')}`;
             const grad   = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
@@ -503,13 +509,144 @@ function setupTooltips() {
         
         node.addEventListener('mousemove', (e) => {
             tooltip.style.left = (e.pageX + 15) + 'px';
-            tooltip.style.top = (e.pageY + 15) + 'px';
+            tooltip.style.top  = (e.pageY + 15) + 'px';
         });
         
         node.addEventListener('mouseleave', () => {
             tooltip.style.display = 'none';
         });
     });
+}
+
+// ==================== Detail Sidebar ====================
+let sidebarNodeId = null;
+let sidebarStepIdx = 0;        // which step visit is being shown (0-based within step_data)
+
+/**
+ * Open (or refresh) the sidebar for the given node data object.
+ * Called from the click handler set up in renderNodes.
+ */
+function openSidebar(node) {
+    sidebarNodeId = node.id;
+    sidebarStepIdx = 0;         // reset to first visit on each new node
+
+    const sidebar  = document.getElementById('detailSidebar');
+    const title    = document.getElementById('sidebarTitle');
+    const stepTabs = document.getElementById('stepTabs');
+
+    // Derive a human-readable title from the node label
+    const labelLine = (node.displayLabel || node.label || node.id).split('\\n')[0];
+    title.textContent = labelLine;
+    title.title       = labelLine;
+
+    // Build step-picker tabs only when there are multiple visits
+    const steps = node.step_data || [];
+    stepTabs.innerHTML = '';
+    if (steps.length > 1) {
+        stepTabs.style.display = 'flex';
+        steps.forEach((sd, i) => {
+            const btn = document.createElement('button');
+            btn.className   = 'step-tab' + (i === 0 ? ' active' : '');
+            btn.textContent = `Step ${sd.step_idx}`;
+            btn.addEventListener('click', () => {
+                sidebarStepIdx = i;
+                // Re-render content and update active tab
+                document.querySelectorAll('.step-tab').forEach((b, j) =>
+                    b.classList.toggle('active', j === i)
+                );
+                renderSidebarContent(node, i);
+            });
+            stepTabs.appendChild(btn);
+        });
+    } else {
+        stepTabs.style.display = 'none';
+    }
+
+    renderSidebarContent(node, 0);
+
+    sidebar.classList.add('open');
+}
+
+function closeSidebar() {
+    document.getElementById('detailSidebar').classList.remove('open');
+    sidebarNodeId = null;
+}
+
+/**
+ * Render thought / action / observation for visit index `visitIdx` of `node`.
+ */
+function renderSidebarContent(node, visitIdx) {
+    const steps = node.step_data || [];
+    const sd    = steps[visitIdx] || {};
+
+    const thought     = sd.thought     || '';
+    const action      = sd.action      || '';
+    const observation = sd.observation || '';
+
+    const container = document.getElementById('sidebarContent');
+    container.innerHTML = '';
+
+    container.appendChild(makeSidebarSection('Thought',     'thought',     thought));
+    container.appendChild(makeSidebarSection('Action',      'action',      action));
+    container.appendChild(makeSidebarSection('Observation', 'observation', observation));
+}
+
+/**
+ * Build a collapsible section element with a sticky header.
+ * Sections for empty text are shown as "(empty)" and start collapsed.
+ */
+function makeSidebarSection(title, cssClass, text) {
+    const section = document.createElement('div');
+    section.className = 'sidebar-section';
+
+    const isEmpty  = !text || !text.trim();
+    let collapsed  = isEmpty;                 // start collapsed when empty
+
+    const header = document.createElement('div');
+    header.className = 'sidebar-section-header';
+
+    const label = document.createElement('span');
+    label.className = `section-label ${cssClass}`;
+    label.textContent = title;
+
+    const lenSpan = document.createElement('span');
+    lenSpan.className = 'section-len';
+    lenSpan.textContent = isEmpty ? '' : `${text.length} chars`;
+
+    const toggle = document.createElement('span');
+    toggle.className = 'section-toggle' + (collapsed ? ' collapsed' : '');
+    toggle.textContent = '▾';
+
+    header.appendChild(label);
+    header.appendChild(lenSpan);
+    header.appendChild(toggle);
+
+    const body = document.createElement('div');
+    body.className = 'sidebar-section-body' + (isEmpty ? ' empty' : '');
+    body.textContent = isEmpty ? '(empty)' : text;
+    if (collapsed) body.style.display = 'none';
+
+    header.addEventListener('click', () => {
+        collapsed = !collapsed;
+        body.style.display = collapsed ? 'none' : '';
+        toggle.classList.toggle('collapsed', collapsed);
+    });
+
+    section.appendChild(header);
+    section.appendChild(body);
+    return section;
+}
+
+// ==================== Fullscreen ====================
+function toggleFullscreen() {
+    const container = document.querySelector('.graph-container');
+    if (!document.fullscreenElement) {
+        (container.requestFullscreen || container.webkitRequestFullscreen ||
+         container.mozRequestFullScreen).call(container);
+    } else {
+        (document.exitFullscreen || document.webkitExitFullscreen ||
+         document.mozCancelFullScreen).call(document);
+    }
 }
 
 // ==================== Zoom and Pan Controls ====================
@@ -610,6 +747,10 @@ function setupPanning() {
     graphEl.addEventListener('mousedown', (e) => {
         if (e.target.closest('.node')) {
             return;
+        }
+        // Click on empty graph background → close sidebar
+        if (!e.target.closest('.detail-sidebar')) {
+            closeSidebar();
         }
         isDragging = true;
         startX = e.clientX - currentX;

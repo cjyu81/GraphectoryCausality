@@ -108,8 +108,8 @@ def _prepare_nodes(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
 
         nodes.append({
             "id":                  node_id,
-            "label":               _make_label(data),         # verbose label (used when verbosity on)
-            "label_minimal":       _make_label_minimal(data), # minimal label (used when verbosity off)
+            "label":               _make_label(data),
+            "label_minimal":       _make_label_minimal(data),
             "tooltip":             _make_tooltip(data),
             "color":               primary_color,
             "colors":              colors,
@@ -119,6 +119,7 @@ def _prepare_nodes(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
             "observation_outcome": obs_outcome,
             "tool":                data.get("tool", ""),
             "subcommand":          data.get("subcommand", ""),
+            "step_data":           data.get("step_data", []),
         })
     return nodes
 

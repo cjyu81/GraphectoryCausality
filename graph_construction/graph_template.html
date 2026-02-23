@@ -41,6 +41,15 @@
         
         <div class="graph-container">
             <div id="graph"></div>
+            <!-- Detail sidebar – populated by JS on node click -->
+            <div class="detail-sidebar" id="detailSidebar">
+                <div class="sidebar-header">
+                    <span class="sidebar-node-title" id="sidebarTitle">—</span>
+                    <button class="sidebar-close-btn" onclick="closeSidebar()" title="Close">✕</button>
+                </div>
+                <div class="step-tabs" id="stepTabs"></div>
+                <div class="sidebar-content" id="sidebarContent"></div>
+            </div>
         </div>
         
         <div class="legend">

@@ -201,6 +201,24 @@ def _make_parser_for_instance(base_parser, graphs_dir: Path, instance_id: str):
 
 
 
+
+def _accumulate_step_data(node_data: dict, step_idx: int,
+                           thought: str, action: str, observation: str) -> None:
+    """Append the full text of this step visit to the node's step_data list.
+
+    Each entry is a dict with step_idx, thought, action, observation so the
+    detail sidebar can display them verbatim and let users page between visits.
+    """
+    if "step_data" not in node_data:
+        node_data["step_data"] = []
+    node_data["step_data"].append({
+        "step_idx":    step_idx,
+        "thought":     thought or "",
+        "action":      action  or "",
+        "observation": observation or "",
+    })
+
+
 def _accumulate_observation(node_data: dict, observation: str) -> None:
     """Append the observation length for this step visit to the node's running list.
 
@@ -330,6 +348,8 @@ def build_graph(traj_data: dict, instance_id: str,
             builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
             _accumulate_observation(builder.G.nodes[node_key], observation)
+            _accumulate_step_data(builder.G.nodes[node_key], step_idx,
+                                  thought, action_str, observation)
 
             builder.add_execution_edge(
                 node_key, step_idx,
@@ -410,6 +430,8 @@ def build_graph(traj_data: dict, instance_id: str,
             # Store both thought lengths on node
             builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
+            _accumulate_step_data(builder.G.nodes[node_key], step_idx,
+                                  thought, action_str, observation)
 
             node_keys_in_step.append(node_key)
             if step_first_node is None:
