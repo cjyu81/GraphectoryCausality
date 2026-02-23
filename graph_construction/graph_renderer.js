@@ -130,6 +130,20 @@ function createMarkers(svg) {
     pathExecMulti.setAttribute('fill', '#3498db');
     markerExecMulti.appendChild(pathExecMulti);
     defs.appendChild(markerExecMulti);
+
+    // Exec arrow for thought-continuation edges (red)
+    const markerThoughtCont = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    markerThoughtCont.setAttribute('id', 'arrowhead-thought-cont');
+    markerThoughtCont.setAttribute('markerWidth', '10');
+    markerThoughtCont.setAttribute('markerHeight', '10');
+    markerThoughtCont.setAttribute('refX', '9');
+    markerThoughtCont.setAttribute('refY', '3');
+    markerThoughtCont.setAttribute('orient', 'auto');
+    const pathThoughtCont = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    pathThoughtCont.setAttribute('d', 'M0,0 L0,6 L9,3 z');
+    pathThoughtCont.setAttribute('fill', '#e74c3c');
+    markerThoughtCont.appendChild(pathThoughtCont);
+    defs.appendChild(markerThoughtCont);
     
     // Hier arrow
     const markerHier = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
@@ -179,6 +193,18 @@ function calculateEdgeStyle(edge) {
     }
 
     if (edge.type === 'exec') {
+        // Thought-continuation: model reused/extended prior step's thought verbatim
+        if (edge.is_thought_continuation) {
+            return {
+                strokeWidth:    2,
+                strokeDasharray: '',
+                stroke:          '#e74c3c',
+                markerEnd:       'url(#arrowhead-thought-cont)',
+                opacity:         0.9,
+            };
+        }
+
+        // Intra-step edges after the first (&&-chained commands)
         if (edge.is_multi_node_step) {
             return {
                 strokeWidth:    1,

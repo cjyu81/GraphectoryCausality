@@ -200,6 +200,56 @@ def _make_parser_for_instance(base_parser, graphs_dir: Path, instance_id: str):
     return parser
 
 
+
+def _accumulate_observation(node_data: dict, observation: str) -> None:
+    """Append the observation length for this step visit to the node's running list.
+
+    Also maintains the scalar ``observation_length`` / ``observation_outcome``
+    fields (set to the most-recent value) so older rendering code keeps working.
+    """
+    length  = len(observation)
+    outcome = detect_observation_outcome(observation)
+
+    if "observation_lengths" not in node_data:
+        node_data["observation_lengths"] = []
+    node_data["observation_lengths"].append(length)
+
+    # Scalar fields: keep the latest value (renderer uses last step's outcome)
+    node_data["observation_length"]  = length
+    node_data["observation_outcome"] = outcome
+
+
+# ── Thought-continuation helper ─────────────────────────────────────────────
+
+def _mark_thought_continuation(
+    G,
+    src_node: str | None,
+    dst_node: str,
+    prev_thought: str,
+    curr_thought: str,
+) -> None:
+    """Mark the most-recently-added exec edge src→dst as a thought continuation.
+
+    A continuation is detected when prev_thought is non-empty and is either
+    equal to curr_thought or is a substring of it (the model reused / extended
+    its previous reasoning verbatim).  Only the edge whose endpoints match
+    (src_node, dst_node) is updated; all other edges between the same pair are
+    left untouched.
+    """
+    if not src_node or not prev_thought or not curr_thought:
+        return
+    if prev_thought not in curr_thought:
+        return
+    # Walk the most-recently-added parallel edge between src→dst
+    edges = G.get_edge_data(src_node, dst_node)
+    if not edges:
+        return
+    # MultiDiGraph stores edges as {0: data, 1: data, …}; use the last key
+    last_key = max(edges.keys())
+    if edges[last_key].get("type") == "exec":
+        edges[last_key]["is_thought_continuation"] = True
+
+
 # ── Graph construction ──────────────────────────────────────────────────────
 
 def build_graph(traj_data: dict, instance_id: str,
@@ -249,6 +299,11 @@ def build_graph(traj_data: dict, instance_id: str,
     trajectory = traj_data.get("trajectory", [])
     prev_phases_list: list[str] = []
 
+    # For thought-continuation detection: track the thought text of each step
+    # and the first node_key produced by that step.
+    prev_thought: str = ""           # thought text of the previous step
+    prev_step_first_node: str | None = None  # first node key of the previous step
+
     for step_idx, step in enumerate(trajectory):
         action_str  = step.get("action", "")
         thought     = step.get("thought", "") or ""
@@ -274,8 +329,7 @@ def build_graph(traj_data: dict, instance_id: str,
             )
             builder.G.nodes[node_key]["thought_len_raw"]   = thought_len_raw
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
-            builder.G.nodes[node_key]["observation_length"]  = len(observation)
-            builder.G.nodes[node_key]["observation_outcome"] = detect_observation_outcome(observation)
+            _accumulate_observation(builder.G.nodes[node_key], observation)
 
             builder.add_execution_edge(
                 node_key, step_idx,
@@ -283,9 +337,17 @@ def build_graph(traj_data: dict, instance_id: str,
                 thought_length_raw=thought_len_raw,
                 thought_length_clean=thought_len_clean,
             )
+            # Mark edge as thought-continuation if applicable
+            _mark_thought_continuation(
+                builder.G, prev_step_first_node, node_key,
+                prev_thought, thought,
+            )
+
             builder.update_previous_node(node_key)
             prev_phases_list.append("general")
             builder.prev_phases.add("general")
+            prev_thought = thought
+            prev_step_first_node = node_key
             continue
 
         # ── Parse action string ────────────────────────────────────────
@@ -305,6 +367,7 @@ def build_graph(traj_data: dict, instance_id: str,
         # ── Create nodes / edges ───────────────────────────────────────
         is_first_in_step  = True
         node_keys_in_step = []
+        step_first_node: str | None = None
 
         for parsed in parsed_commands:
             tool       = (parsed.get("tool")       or "").strip()
@@ -313,14 +376,10 @@ def build_graph(traj_data: dict, instance_id: str,
             args       = parsed.get("args",  {})
             flags      = parsed.get("flags", {})
 
-            if tool and subcommand:
-                node_label = f"{tool}: {subcommand}"
-            elif tool:
-                node_label = tool
-            elif command:
-                node_label = command.split()[0] if command.split() else command
+            if tool:
+                node_label = f"{tool}: {subcommand}" if subcommand else tool
             else:
-                node_label = action_str.strip().split()[0][:30] if action_str.strip() else "action"
+                node_label = command.strip() or action_str.strip()
 
             phase = get_phase(tool, subcommand, command, args, prev_phases_list)
 
@@ -353,6 +412,8 @@ def build_graph(traj_data: dict, instance_id: str,
             builder.G.nodes[node_key]["thought_len_clean"] = thought_len_clean
 
             node_keys_in_step.append(node_key)
+            if step_first_node is None:
+                step_first_node = node_key
 
             # First edge in each step carries thought; subsequent intra-step edges carry 0
             builder.add_execution_edge(
@@ -361,6 +422,14 @@ def build_graph(traj_data: dict, instance_id: str,
                 thought_length_raw=thought_len_raw if is_first_in_step else 0,
                 thought_length_clean=thought_len_clean if is_first_in_step else 0,
             )
+
+            # Mark the first edge of this step as thought-continuation if applicable
+            if is_first_in_step:
+                _mark_thought_continuation(
+                    builder.G, prev_step_first_node, node_key,
+                    prev_thought, thought,
+                )
+
             builder.update_previous_node(node_key)
             prev_phases_list.append(phase)
             builder.prev_phases.add(phase)
@@ -370,8 +439,10 @@ def build_graph(traj_data: dict, instance_id: str,
         # ── Mark last node of this step with observation info ─────────
         if node_keys_in_step:
             last_node = node_keys_in_step[-1]
-            builder.G.nodes[last_node]["observation_length"]  = len(observation)
-            builder.G.nodes[last_node]["observation_outcome"] = detect_observation_outcome(observation)
+            _accumulate_observation(builder.G.nodes[last_node], observation)
+
+        prev_thought = thought
+        prev_step_first_node = step_first_node
 
     # ── Post-processing ────────────────────────────────────────────────
     build_hierarchical_edges(builder.G, builder.localization_nodes)

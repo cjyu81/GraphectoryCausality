@@ -138,68 +138,66 @@ def _node_colors(data: dict) -> list[str]:
 
 
 def _make_label_minimal(data: dict) -> str:
-    """Minimal label: just the action verb, nothing else."""
-    tool       = (data.get("tool")       or "").strip()
-    subcommand = (data.get("subcommand") or "").strip()
-    command    = (data.get("command")    or "").strip()
-    
-    # SPECIAL CASE: str_replace_editor → show subcommand alone
-    if tool == "str_replace_editor" and subcommand:
-        return subcommand
-    
-    if tool and subcommand:
-        return subcommand
-    elif tool:
-        return tool
-    elif command:
-        first_token = command.split()[0] if command.split() else command
-        return first_token[:20]
-    else:
-        raw_label = (data.get("label") or "").strip()
-        parts = raw_label.splitlines()[0].split()
-        return " ".join(parts[:2])[:30] if len(parts) >= 2 else raw_label[:30]
+    """Minimal label: the action verb extracted from the stored label.
+
+    The stored ``label`` is the canonical title set during node creation
+    (e.g. ``"str_replace_editor: view"``, ``"grep -r foo src/"``).
+    For compact display we extract just the leading verb/subcommand:
+      - ``str_replace_editor: view``  → ``view``
+      - ``grep -r foo src/``          → ``grep``
+      - ``python``                    → ``python``
+    """
+    raw_label = (data.get("label") or "").strip()
+    if not raw_label:
+        return "action"
+
+    # For "tool: subcommand" format, the subcommand is the meaningful part
+    if ": " in raw_label:
+        return raw_label.split(": ", 1)[1].split()[0][:20]
+
+    # Otherwise take the first token (the command verb)
+    return raw_label.split()[0][:20] if raw_label.split() else raw_label[:20]
 
 
 def _make_label(data: dict) -> str:
-    """Default label (currently verbose; will be swapped by verbosity switch in JS)."""
+    """Verbose node label: title + subtitle lines for step/path/range.
+
+    Line 1 (title): for tool nodes, just the subcommand (e.g. ``view``);
+                    for bare commands, the verb (e.g. ``python``).
+    Line 2: step index(es).
+    Line 3: shortened file path (args["path"] for tool nodes;
+            first positional arg for python/pytest nodes).
+    Line 4: view range (when present in args).
+    """
     lines = []
+    args = data.get("args", {}) or {}
 
     tool       = (data.get("tool")       or "").strip()
     subcommand = (data.get("subcommand") or "").strip()
     command    = (data.get("command")    or "").strip()
     raw_label  = (data.get("label")      or "").strip()
-    args       = data.get("args", {}) or {}
 
-    # ── Line 1: action title ─────────────────────────────────────────────────
-    # SPECIAL CASE: str_replace_editor → show subcommand alone (not "editor: view")
-    if tool == "str_replace_editor" and subcommand:
-        base = subcommand
-    elif tool and subcommand:
-        base = subcommand
+    # ── Line 1: clean action title ────────────────────────────────────────────
+    # For tool nodes (str_replace_editor, etc.) show only the subcommand.
+    # For bare shell commands show just the verb.
+    if tool and subcommand:
+        title = subcommand                          # e.g. "view", "str_replace"
     elif tool:
-        base = tool
+        title = tool
     elif command:
-        first_token = command.split()[0] if command.split() else command
-        base = first_token[:20]
-    elif raw_label:
-        parts = raw_label.splitlines()[0].split()
-        base = " ".join(parts[:2])[:30] if len(parts) >= 2 else raw_label[:30]
-        if len(raw_label.splitlines()[0]) > 30:
-            base += "…"
+        title = command.split()[0][:20]             # verb only, e.g. "python"
     else:
-        base = "action"
+        title = raw_label.split()[0][:20] if raw_label.split() else "action"
 
     # Outcome badge
     if isinstance(args, dict):
-        edit_status      = args.get("edit_status", "")
-        command_outcome  = args.get("command_outcome", "")
-        status = edit_status or command_outcome
+        status = args.get("edit_status", "") or args.get("command_outcome", "")
         if status == "success":
-            base += " ✓"
+            title += " ✓"
         elif status and str(status).startswith("failure"):
-            base += " ✗"
+            title += " ✗"
 
-    lines.append(base)
+    lines.append(title)
 
     # ── Line 2: step index(es) ───────────────────────────────────────────────
     step_indices = data.get("step_indices", [])
@@ -212,18 +210,39 @@ def _make_label(data: dict) -> str:
             lines.append(f"steps {step_indices[0]}–{step_indices[-1]} (×{len(step_indices)})")
 
     # ── Line 3: key argument info ────────────────────────────────────────────
-    if isinstance(args, dict):
-        path = args.get("path")
-        if path:
-            p = str(path).replace("\\", "/")
-            parts = [pt for pt in p.split("/") if pt]
-            short = ("…/" + "/".join(parts[-2:])) if len(parts) > 2 else p
-            lines.append(short[:35] + ("…" if len(short) > 35 else ""))
-        elif args.get("_raw"):
-            raw = str(args["_raw"])
-            lines.append(raw[:28] + ("…" if len(raw) > 28 else ""))
+    path = None
 
-        # ── Line 4: view range ───────────────────────────────────────────────
+    if isinstance(args, dict):
+        # Tool nodes (str_replace_editor, etc.) store path as a dict key
+        path = args.get("path")
+
+    if path is None:
+        # Python/pytest nodes: commandParser puts the script as the first
+        # positional arg in a list, e.g. args = ["tests/test_foo.py", "-v"]
+        _PY_CMDS = {"python", "python3", "python2", "pytest"}
+        verb = command.split()[0].lower() if command.split() else ""
+        if verb in _PY_CMDS:
+            # args may be a list of positional arguments
+            candidates = args if isinstance(args, list) else []
+            for tok in candidates:
+                tok = str(tok)
+                if not tok.startswith("-") and (
+                    tok.endswith(".py") or "/" in tok or "\\" in tok
+                ):
+                    path = tok
+                    break
+
+    if path:
+        p = str(path).replace("\\", "/")
+        parts = [pt for pt in p.split("/") if pt]
+        short = ("…/" + "/".join(parts[-2:])) if len(parts) > 2 else p
+        lines.append(short[:35] + ("…" if len(short) > 35 else ""))
+    elif isinstance(args, dict) and args.get("_raw"):
+        raw = str(args["_raw"])
+        lines.append(raw[:28] + ("…" if len(raw) > 28 else ""))
+
+    # ── Line 4: view range ───────────────────────────────────────────────────
+    if isinstance(args, dict):
         vr = args.get("view_range")
         if isinstance(vr, (list, tuple)) and len(vr) == 2:
             lines.append(f"L{vr[0]}–{vr[1]}")
@@ -263,21 +282,14 @@ def _make_tooltip(data: dict) -> str:
             f'{_esc(title)}</div>'
         )
 
-    # ── Header: human-readable title ─────────────────────────────────────────
+    # ── Header: use the stored label as the canonical title ──────────────────
+    raw_label = (data.get("label") or "").strip()
+    header_title = raw_label[:80] + ("…" if len(raw_label) > 80 else "")
+
+    # Re-read tool/subcommand/command for the identity rows below
     tool       = (data.get("tool")       or "").strip()
     subcommand = (data.get("subcommand") or "").strip()
     command    = (data.get("command")    or "").strip()
-    raw_label  = (data.get("label")      or "").strip()
-
-    # Build a descriptive title for the tooltip header
-    if tool and subcommand:
-        header_title = f"{tool}: {subcommand}"
-    elif tool:
-        header_title = tool
-    elif command:
-        header_title = command[:80] + ("…" if len(command) > 80 else "")
-    else:
-        header_title = raw_label[:80] + ("…" if len(raw_label) > 80 else "")
 
     parts.append(
         f'<div style="font-weight:700;font-size:14px;margin-bottom:8px;'
@@ -312,19 +324,47 @@ def _make_tooltip(data: dict) -> str:
         if len(thought_lengths) == 1:
             parts.append(_row("Thought len", str(thought_lengths[0])))
         else:
-            avg   = sum(thought_lengths) // len(thought_lengths)
-            total = sum(thought_lengths)
-            parts.append(_row("Thought len", f"avg {avg}, total {total} ({len(thought_lengths)} steps)"))
+            # Show each step's thought length as a numbered list
+            items_html = "".join(
+                f'<div style="margin-left:8px;">#{i+1}: {tl}</div>'
+                for i, tl in enumerate(thought_lengths)
+            )
+            parts.append(
+                f'<div style="display:flex;gap:8px;margin:2px 0;">'
+                f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Thought lens</span>'
+                f'<span style="word-break:break-all;">{items_html}</span>'
+                f'</div>'
+            )
 
     # ── Observation section ──────────────────────────────────────────────────
-    obs_length  = data.get("observation_length",  0)
-    obs_outcome = data.get("observation_outcome", "neutral")
-    if obs_length:
+    obs_lengths  = data.get("observation_lengths",  [])   # per-step list (may be absent on older nodes)
+    obs_length   = data.get("observation_length",   0)    # scalar fallback (last step only)
+    obs_outcome  = data.get("observation_outcome",  "neutral")
+
+    if obs_lengths and len(obs_lengths) > 1:
+        obs_color = {"success": "#7defa7", "failure": "#ff8080"}.get(obs_outcome, "#a0c4ff")
+        items_html = "".join(
+            f'<div style="margin-left:8px;">#{i+1}: {ol}</div>'
+            for i, ol in enumerate(obs_lengths)
+        )
+        parts.append(
+            f'<div style="display:flex;gap:8px;margin:2px 0;">'
+            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Observation lens</span>'
+            f'<span style="word-break:break-all;">{items_html}</span>'
+            f'</div>'
+        )
+        parts.append(
+            f'<div style="display:flex;gap:8px;margin:2px 0;">'
+            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Obs. status</span>'
+            f'<span style="color:{obs_color};font-weight:600;">{_esc(obs_outcome)}</span>'
+            f'</div>'
+        )
+    elif obs_length:
         obs_color = {"success": "#7defa7", "failure": "#ff8080"}.get(obs_outcome, "#a0c4ff")
         parts.append(_row("Observation len", str(obs_length)))
         parts.append(
             f'<div style="display:flex;gap:8px;margin:2px 0;">'
-            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">{_esc("Obs. status")}</span>'
+            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Obs. status</span>'
             f'<span style="color:{obs_color};font-weight:600;">{_esc(obs_outcome)}</span>'
             f'</div>'
         )
@@ -393,20 +433,23 @@ def _prepare_edges(G: nx.MultiDiGraph) -> list[dict[str, Any]]:
             u_steps = set(G.nodes[u].get("step_indices", []))
             v_steps = set(G.nodes[v].get("step_indices", []))
             is_multi_node = bool(u_steps & v_steps) and not is_first_in_step
+            is_thought_continuation = bool(d.get("is_thought_continuation", False))
         else:
-            thought_len_raw   = 0
-            thought_len_clean = 0
-            is_multi_node     = False
+            thought_len_raw          = 0
+            thought_len_clean        = 0
+            is_multi_node            = False
+            is_thought_continuation  = False
 
         edges.append({
-            "from":                u,
-            "to":                  v,
-            "type":                etype,
-            "label":               edge_label if etype == "exec" else "",
-            "thought_length_raw":  thought_len_raw,
-            "thought_length_clean": thought_len_clean,
-            "is_multi_node_step":  is_multi_node,
-            "is_first_in_step":    is_first_in_step,
+            "from":                    u,
+            "to":                      v,
+            "type":                    etype,
+            "label":                   edge_label if etype == "exec" else "",
+            "thought_length_raw":      thought_len_raw,
+            "thought_length_clean":    thought_len_clean,
+            "is_multi_node_step":      is_multi_node,
+            "is_first_in_step":        is_first_in_step,
+            "is_thought_continuation": is_thought_continuation,
         })
 
     return edges
