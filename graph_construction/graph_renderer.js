@@ -217,16 +217,17 @@ function calculateEdgeStyle(edge) {
         const tlen = getThoughtLength(edge);
         if (tlen === 0) {
             return {
-                strokeWidth:    1,
+                strokeWidth:    1.5,
                 strokeDasharray: '4,4',
                 stroke:          '#95a5a6',
                 markerEnd:       'url(#arrowhead-exec)',
                 opacity:         0.75,
             };
         }
+        // Body stays thin; arrowhead marker scales with thought length.
         const w = thoughtToWidth(tlen);
         return {
-            strokeWidth:    w,
+            strokeWidth:    1.5,
             strokeDasharray: '',
             stroke:          '#7f8c8d',
             markerEnd:       `url(#arrowhead-exec-w${Math.round(w)})`,
@@ -271,44 +272,51 @@ function pointsToPath(points, offsetY) {
 }
 
 /**
- * Map observation length to a body stroke-width.
- * The body thickness encodes how long the previous step's observation was.
- * Range: 1 (empty) → ~18 (very long), matching the thoughtToWidth scale.
+ * Map observation length to a square half-size (radius) in SVG px.
+ * Small obs → small square, large obs → larger square.
+ * Range: ~4px (tiny) → ~14px (very long observation).
  */
-function obsLengthToWidth(obsLength) {
-    if (!obsLength || obsLength <= 0) return 1;
+function obsLengthToSize(obsLength) {
+    if (!obsLength || obsLength <= 0) return 0;
     const capped = Math.min(obsLength, 8000);
-    if (capped <= 500)  return 1  + (capped / 500) * 5;
-    if (capped <= 2000) return 6  + ((capped - 500)  / 1500) * 8;
-    return 14 + ((capped - 2000) / 6000) * 4;
+    if (capped <= 500)  return 4  + (capped / 500) * 4;
+    if (capped <= 2000) return 8  + ((capped - 500)  / 1500) * 4;
+    return 12 + ((capped - 2000) / 6000) * 2;
+}
+
+/**
+ * Return the colour for an observation square given its outcome.
+ */
+function obsOutcomeColor(outcome) {
+    if (outcome === 'success') return '#4ade80';
+    if (outcome === 'failure') return '#ff8080';
+    return '#8899cc';   // neutral
 }
 
 /**
  * Return {x, y} at fraction t (0–1) of the polyline's total arc length.
- * offsetY is added to all y values before computing distances.
  */
 function interpOnPath(points, t, offsetY) {
-    if (!points || points.length === 0) return { x: 0, y: 0 };
-    if (points.length === 1) return { x: points[0].x, y: points[0].y + offsetY };
-
-    // Cumulative arc lengths
+    if (!points || points.length <= 1) {
+        const p = points && points[0] ? points[0] : { x: 0, y: 0 };
+        return { x: p.x, y: p.y + offsetY };
+    }
     const segs = [];
     let total = 0;
     for (let i = 1; i < points.length; i++) {
         const dx = points[i].x - points[i-1].x;
-        const dy = (points[i].y + offsetY) - (points[i-1].y + offsetY);
+        const dy = points[i].y - points[i-1].y;
         const len = Math.sqrt(dx*dx + dy*dy);
         segs.push(len);
         total += len;
     }
-
     const target = t * total;
     let acc = 0;
     for (let i = 0; i < segs.length; i++) {
         if (acc + segs[i] >= target) {
             const frac = segs[i] > 0 ? (target - acc) / segs[i] : 0;
             return {
-                x: points[i].x   + frac * (points[i+1].x - points[i].x),
+                x: points[i].x + frac * (points[i+1].x - points[i].x),
                 y: (points[i].y + offsetY) + frac * ((points[i+1].y + offsetY) - (points[i].y + offsetY)),
             };
         }
@@ -327,8 +335,7 @@ function renderEdges(svg, g, defs) {
         edgesByPair[key].push({ ...edge, idx });
     });
 
-    // Create per-width arrowhead markers for thought length (marker-end)
-    // and observation length (marker-mid, same shape, independent size).
+    // Create per-width arrowhead markers for thought-length scaling.
     function makeArrowMarker(id, w, color) {
         const m = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
         m.setAttribute('id', id);
@@ -344,32 +351,24 @@ function renderEdges(svg, g, defs) {
         defs.appendChild(m);
     }
 
-    // Collect all distinct thought widths (for marker-end)
+    // Pre-create per-width arrowhead markers for thought length scaling.
     const thoughtWidthsSeen = new Set();
-    // Collect all distinct obs widths (for marker-mid)
-    const obsWidthsSeen = new Set();
-
     edgesData.forEach(edge => {
         if (edge.type === 'exec' && !edge.is_multi_node_step && !edge.is_thought_continuation) {
             const tlen = getThoughtLength(edge);
             if (tlen > 0) thoughtWidthsSeen.add(Math.round(thoughtToWidth(tlen)));
         }
-        if (settings.showObservation && edge.is_first_in_step && edge.obs_length > 0) {
-            obsWidthsSeen.add(Math.round(obsLengthToWidth(edge.obs_length)));
-        }
     });
-
-    thoughtWidthsSeen.forEach(w => makeArrowMarker(`arrowhead-exec-w${w}`,     w, '#7f8c8d'));
-    obsWidthsSeen.forEach(w     => makeArrowMarker(`arrowhead-obs-w${w}`,        w, '#7f8c8d'));
+    thoughtWidthsSeen.forEach(w => makeArrowMarker(`arrowhead-exec-w${w}`, w, '#7f8c8d'));
 
     g.edges().forEach(e => {
-        const edge      = g.edge(e);
-        const edgeKey   = `${e.v}-${e.w}`;
+        const edge        = g.edge(e);
+        const edgeKey     = `${e.v}-${e.w}`;
         const edgesInPair = edgesByPair[edgeKey] || [];
-        const edgeIndex = edgesInPair.findIndex(
+        const edgeIndex   = edgesInPair.findIndex(
             ed => ed.type === edge.type && ed.label === edge.label
         );
-        const totalEdges = edgesInPair.length;
+        const totalEdges  = edgesInPair.length;
 
         const edgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         edgeGroup.setAttribute('class', `edge ${edge.type}`);
@@ -382,74 +381,56 @@ function renderEdges(svg, g, defs) {
             offsetY = (edgeIndex - (totalEdges - 1) / 2) * 14;
         }
 
-        // ── Edge path rendering ─────────────────────────────────────────────
-        // For normal first-in-step exec edges with a preceding observation:
-        //   Draw a single path that passes through a midpoint at ~70% of the
-        //   arc length.  marker-mid fires at that midpoint (obs arrowhead,
-        //   sized by obs_length) and marker-end fires at the target (thought
-        //   arrowhead, sized by thought length).  The line body itself uses the
-        //   thought stroke-width so the overall visual weight matches the edge.
-        //
-        // For all other edges: single path with marker-end only.
+        // ── Edge path (single, uniform thin body + scaled arrowhead) ────────
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d',            pointsToPath(points, offsetY));
+        path.setAttribute('fill',         'none');
+        path.setAttribute('stroke',       style.stroke);
+        path.setAttribute('stroke-width', String(style.strokeWidth));
+        path.setAttribute('opacity',      String(style.opacity));
+        if (style.strokeDasharray) {
+            path.setAttribute('stroke-dasharray', style.strokeDasharray);
+        }
+        path.setAttribute('marker-end', style.markerEnd);
+        edgeGroup.appendChild(path);
 
-        const isNormalExec = (
-            edge.type === 'exec' &&
-            !edge.is_multi_node_step &&
-            !edge.is_thought_continuation
-        );
-        const useDoubleArrow = (
-            isNormalExec &&
+        // ── Observation square ───────────────────────────────────────────────
+        // Drawn on top of the edge at ~25% arc length.
+        // Only for first-in-step exec edges when showObservation is on.
+        const showObsSquare = (
             settings.showObservation &&
+            edge.type === 'exec' &&
             edge.is_first_in_step &&
+            !edge.is_multi_node_step &&
+            !edge.is_thought_continuation &&
             edge.obs_length > 0 &&
             points && points.length >= 2
         );
-
-        if (useDoubleArrow) {
-            // Find the point at 70% of arc length for the obs arrowhead
-            const midPt   = interpOnPath(points, 0.70, offsetY);
-            const obsW    = Math.round(obsLengthToWidth(edge.obs_length));
-            const obsMark = `url(#arrowhead-obs-w${obsW})`;
-
-            // Build a 3-point path: start → midPt → end
-            // marker-mid fires at midPt, marker-end fires at end
-            const firstPt = { x: points[0].x, y: points[0].y + offsetY };
-            const lastPt  = { x: points[points.length-1].x,
-                              y: points[points.length-1].y + offsetY };
-            const pathD3  = `M ${firstPt.x} ${firstPt.y} L ${midPt.x} ${midPt.y} L ${lastPt.x} ${lastPt.y}`;
-
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d',            pathD3);
-            path.setAttribute('fill',         'none');
-            path.setAttribute('stroke',       style.stroke);
-            path.setAttribute('stroke-width', String(style.strokeWidth));
-            path.setAttribute('opacity',      String(style.opacity));
-            path.setAttribute('marker-mid',   obsMark);
-            path.setAttribute('marker-end',   style.markerEnd);
-            edgeGroup.appendChild(path);
-
-        } else {
-            // Normal single-path rendering (thought-width body + one arrowhead).
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d',    pointsToPath(points, offsetY));
-            path.setAttribute('fill', 'none');
-            path.setAttribute('stroke',       style.stroke);
-            path.setAttribute('stroke-width', String(style.strokeWidth));
-            path.setAttribute('opacity',      String(style.opacity));
-            if (style.strokeDasharray) {
-                path.setAttribute('stroke-dasharray', style.strokeDasharray);
-            }
-            path.setAttribute('marker-end', style.markerEnd);
-            edgeGroup.appendChild(path);
+        if (showObsSquare) {
+            const sqPt   = interpOnPath(points, 0.25, offsetY);
+            const half   = obsLengthToSize(edge.obs_length);
+            const color  = obsOutcomeColor(edge.obs_outcome);
+            const sq     = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            sq.setAttribute('x',            String(sqPt.x - half));
+            sq.setAttribute('y',            String(sqPt.y - half));
+            sq.setAttribute('width',        String(half * 2));
+            sq.setAttribute('height',       String(half * 2));
+            sq.setAttribute('rx',           String(half * 0.4));   // rounded corners
+            sq.setAttribute('ry',           String(half * 0.4));
+            sq.setAttribute('fill',         color);
+            sq.setAttribute('opacity',      '0.85');
+            sq.setAttribute('stroke',       '#1a1f2e');
+            sq.setAttribute('stroke-width', '1');
+            edgeGroup.appendChild(sq);
         }
 
-        // Step-number label (only on exec edges)
+        // ── Step-number label (exec edges only) ──────────────────────────────
         if (edge.label && edge.type === 'exec') {
             const midIdx   = Math.floor(points.length / 2);
             const midPoint = points[midIdx];
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', midPoint.x);
-            text.setAttribute('y', midPoint.y + offsetY - 5);
+            const text     = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x',           midPoint.x);
+            text.setAttribute('y',           midPoint.y + offsetY - 5);
             text.setAttribute('text-anchor', 'middle');
             text.setAttribute('font-size',   '10');
             text.setAttribute('fill',        '#7f8c8d');
