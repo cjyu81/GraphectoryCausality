@@ -64,10 +64,10 @@ class GraphHandler(BaseHTTPRequestHandler):
 
             elif path == "/api/graph":
                 instance_id       = params.get("id",              [""])[0]
-                filter_cd         = params.get("filter_cd",       ["true"])[0].lower() == "true"
-                thought_quotes    = params.get("thought_quotes",  ["false"])[0].lower() == "true"
+                filter_cd         = params.get("filter_cd",       ["false"])[0].lower() == "true"
+                thought_quotes    = params.get("thought_quotes",  ["true"])[0].lower() == "true"
                 node_verbosity    = params.get("node_verbosity",  ["true"])[0].lower() == "true"
-                show_observation  = params.get("show_observation", ["true"])[0].lower() == "true"
+                show_observation  = params.get("show_observation", ["false"])[0].lower() == "true"
                 
                 if not instance_id:
                     self._error(400, "Missing ?id= parameter")
@@ -97,7 +97,6 @@ class GraphHandler(BaseHTTPRequestHandler):
             instance_id       = instance_id,
             eval_report_path  = self.eval_report_path,
             cmd_parser        = self.cmd_parser,
-            graphs_dir        = self.graphs_dir,
             filter_cd         = filter_cd,
         )
 

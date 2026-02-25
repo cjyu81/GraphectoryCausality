@@ -323,33 +323,15 @@ def _make_tooltip(data: dict) -> str:
         if len(thought_lengths) == 1:
             parts.append(_row("Thought len", str(thought_lengths[0])))
         else:
-            # Show each step's thought length as a numbered list
-            items_html = "".join(
-                f'<div style="margin-left:8px;">#{i+1}: {tl}</div>'
-                for i, tl in enumerate(thought_lengths)
-            )
-            parts.append(
-                f'<div style="display:flex;gap:8px;margin:2px 0;">'
-                f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Thought lens</span>'
-                f'<span style="word-break:break-all;">{items_html}</span>'
-                f'</div>'
-            )
+            # Show as compact comma-separated list
+            parts.append(_row("Thought lens", ", ".join(map(str, thought_lengths))))
 
     # ── Observation section ──────────────────────────────────────────────────
     obs_lengths = data.get("observation_lengths", [])
     obs_length  = data.get("observation_length",  0)
 
     if obs_lengths and len(obs_lengths) > 1:
-        items_html = "".join(
-            f'<div style="margin-left:8px;">#{i+1}: {ol}</div>'
-            for i, ol in enumerate(obs_lengths)
-        )
-        parts.append(
-            f'<div style="display:flex;gap:8px;margin:2px 0;">'
-            f'<span style="color:#a0c4ff;min-width:110px;flex-shrink:0;">Observation lens</span>'
-            f'<span style="word-break:break-all;">{items_html}</span>'
-            f'</div>'
-        )
+        parts.append(_row("Observation lens", ", ".join(map(str, obs_lengths))))
     elif obs_length:
         parts.append(_row("Observation len", str(obs_length)))
 

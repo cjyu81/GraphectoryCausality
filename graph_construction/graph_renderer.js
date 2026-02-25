@@ -273,15 +273,16 @@ function pointsToPath(points, offsetY) {
 
 /**
  * Map observation length to a square half-size (radius) in SVG px.
- * Small obs → small square, large obs → larger square.
- * Range: ~4px (tiny) → ~14px (very long observation).
+ * Uses a power curve for more visual variation across the range.
+ * Range: ~5px (tiny) → ~28px (very long, ≥100000 chars).
  */
 function obsLengthToSize(obsLength) {
     if (!obsLength || obsLength <= 0) return 0;
-    const capped = Math.min(obsLength, 8000);
-    if (capped <= 500)  return 4  + (capped / 500) * 4;
-    if (capped <= 2000) return 8  + ((capped - 500)  / 1500) * 4;
-    return 12 + ((capped - 2000) / 6000) * 2;
+    const capped = Math.min(obsLength, 100000);
+    // Power curve: small differences at the low end are magnified
+    const t    = capped / 8000;                  // 0‥1
+    const half = 5 + Math.pow(t, 0.55) * 23;    // 5px → 28px
+    return half;
 }
 
 /**
@@ -819,35 +820,46 @@ function setupWheelZoom() {
 
 // ==================== Pan with Drag ====================
 function setupPanning() {
+    let dragMoved = false;   // true once the pointer moves >4px after mousedown
+
     graphEl.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.node')) {
-            return;
-        }
-        // Click on empty graph background → close sidebar
-        if (!e.target.closest('.detail-sidebar')) {
-            closeSidebar();
-        }
+        if (e.target.closest('.node')) return;
+        if (e.target.closest('.detail-sidebar')) return;
+
         isDragging = true;
+        dragMoved  = false;
         startX = e.clientX - currentX;
         startY = e.clientY - currentY;
         graphEl.style.cursor = 'grabbing';
-        e.preventDefault();
+        // Do NOT call e.preventDefault() here — that would suppress the
+        // subsequent 'click' event and break the X button on the sidebar.
     });
-    
+
     graphEl.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
+        const dx = e.clientX - (startX + currentX);
+        const dy = e.clientY - (startY + currentY);
+        if (!dragMoved && Math.sqrt(dx*dx + dy*dy) > 4) dragMoved = true;
         currentX = e.clientX - startX;
         currentY = e.clientY - startY;
         updateTransform();
+        // Suppress text selection only while actually dragging
+        e.preventDefault();
     });
-    
-    graphEl.addEventListener('mouseup', () => {
+
+    graphEl.addEventListener('mouseup', (e) => {
+        if (isDragging && !dragMoved && !e.target.closest('.node')) {
+            // Genuine click on whitespace → close sidebar
+            closeSidebar();
+        }
         isDragging = false;
+        dragMoved  = false;
         graphEl.style.cursor = 'grab';
     });
-    
+
     graphEl.addEventListener('mouseleave', () => {
         isDragging = false;
+        dragMoved  = false;
         graphEl.style.cursor = 'grab';
     });
 }
@@ -908,15 +920,27 @@ function initializeGraph() {
     setupWheelZoom();
     setupPanning();
     setupSidebarResize();
-    // Wire close button via JS so it's guaranteed to find the named function
-    const _closeBtn = document.getElementById('sidebarCloseBtn');
-    if (_closeBtn) _closeBtn.addEventListener('click', closeSidebar);
+
     
     setTimeout(fitToScreen, 150);
 }
 
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeGraph);
+    document.addEventListener('DOMContentLoaded', () => {
+        initializeGraph();
+        _wireSidebarClose();
+    });
 } else {
     initializeGraph();
+    _wireSidebarClose();
+}
+
+function _wireSidebarClose() {
+    const btn = document.getElementById('sidebarCloseBtn');
+    if (btn) {
+        // Belt-and-suspenders: both click and mouseup so the event fires
+        // even if something upstream cancelled the click.
+        btn.addEventListener('click',   closeSidebar);
+        btn.addEventListener('mouseup', (e) => { e.stopPropagation(); closeSidebar(); });
+    }
 }
