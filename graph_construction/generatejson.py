@@ -29,8 +29,8 @@ import networkx as nx
 from datasets import load_dataset
 from networkx.readwrite import json_graph
 
-from graph_construction.commandParser import CommandParser
-from graph_construction.mapPhase import get_phase
+from commandParser import CommandParser
+from mapPhase import get_phase
 
 
 # ==================== Configuration ====================
