@@ -4,7 +4,7 @@ live_graph_server.py
 
 Single entry point.  Run:
 
-    python live_graph_server.py --trajs <dir> --eval_report <file>
+    python live_graph_server.py --graphs_dir <dir> --eval_report <file>
 
 Then open http://localhost:8000 in your browser.
 
@@ -32,25 +32,23 @@ def parse_args() -> argparse.Namespace:
 Examples
 --------
   python live_graph_server.py \\
-      --trajs output/SWE-agent/graphs/deepseek-v3 \\
+      --graphs_dir output/SWE-agent/graphs/deepseek-v3 \\
       --eval_report report.json
 
   python live_graph_server.py \\
-      --trajs trajectories \\
+      --graphs_dir trajectories \\
       --eval_report report.json \\
       --assets_dir custom_templates \\
       --port 8080
         """,
     )
-    p.add_argument("--trajs",    required=True,
+    p.add_argument("--graphs_dir",    required=True,
                    help="Directory that contains .traj files")
     p.add_argument("--eval_report",   required=True,
                    help="Evaluation report JSON used for resolution status")
     p.add_argument("--assets_dir",    default=None,
                    help="Directory with graph_template.html / styles.css / "
                         "graph_renderer.js  (defaults to same dir as this script)")
-    p.add_argument("--out_dir", default=".",
-               help="Base output directory (default: current working directory)")
     p.add_argument("--port",          type=int, default=8000)
     return p.parse_args()
 
@@ -92,23 +90,24 @@ def setup_cmd_parser():
 
 def main() -> int:
     args = parse_args()
-    out_dir = Path(args.out_dir).expanduser().resolve()
 
-    trajs = out_dir / args.trajs
-    if not trajs.exists():
-        print(f"[ERROR] trajs does not exist: {trajs}")
+    graphs_dir = Path(args.graphs_dir)
+    if not graphs_dir.exists():
+        print(f"[ERROR] graphs_dir does not exist: {graphs_dir}")
         return 1
-    eval_report = out_dir / args.eval_report
+
+    eval_report = Path(args.eval_report)
     if not eval_report.exists():
         print(f"[ERROR] eval_report does not exist: {eval_report}")
         return 1
+
     assets_dir = Path(args.assets_dir) if args.assets_dir else Path(__file__).parent
     if not assets_dir.exists():
         print(f"[ERROR] assets_dir does not exist: {assets_dir}")
         return 1
 
     # Inject configuration into the handler class
-    GraphHandler.trajs       = trajs
+    GraphHandler.graphs_dir       = graphs_dir
     GraphHandler.eval_report_path = str(eval_report)
     GraphHandler.cmd_parser       = setup_cmd_parser()
     GraphHandler.assets_dir       = assets_dir
@@ -118,10 +117,9 @@ def main() -> int:
     print(f"\n{'─'*60}")
     print(f"  Trajectory Graph Server")
     print(f"{'─'*60}")
-    print(f"  Output dir   : {out_dir}")
-    print(f"  Graphs dir   : {trajs}")
-    print(f"  Eval report  : {eval_report}")
-    print(f"  Assets dir   : {assets_dir}")
+    print(f"  Graphs dir   : {graphs_dir.absolute()}")
+    print(f"  Eval report  : {eval_report.absolute()}")
+    print(f"  Assets dir   : {assets_dir.absolute()}")
     print(f"  URL          : http://localhost:{args.port}")
     print(f"{'─'*60}\n")
     print("  Press Ctrl+C to stop.\n")
