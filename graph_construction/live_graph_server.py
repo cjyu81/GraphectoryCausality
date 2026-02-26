@@ -4,7 +4,7 @@ live_graph_server.py
 
 Single entry point.  Run:
 
-    python live_graph_server.py --graphs_dir <dir> --eval_report <file>
+    python live_graph_server.py --trajs <dir> --eval_report <file>
 
 Then open http://localhost:8000 in your browser.
 
@@ -32,17 +32,17 @@ def parse_args() -> argparse.Namespace:
 Examples
 --------
   python live_graph_server.py \\
-      --graphs_dir output/SWE-agent/graphs/deepseek-v3 \\
+      --trajs output/SWE-agent/graphs/deepseek-v3 \\
       --eval_report report.json
 
   python live_graph_server.py \\
-      --graphs_dir trajectories \\
+      --trajs trajectories \\
       --eval_report report.json \\
       --assets_dir custom_templates \\
       --port 8080
         """,
     )
-    p.add_argument("--graphs_dir",    required=True,
+    p.add_argument("--trajs",    required=True,
                    help="Directory that contains .traj files")
     p.add_argument("--eval_report",   required=True,
                    help="Evaluation report JSON used for resolution status")
@@ -91,9 +91,9 @@ def setup_cmd_parser():
 def main() -> int:
     args = parse_args()
 
-    graphs_dir = Path(args.graphs_dir)
-    if not graphs_dir.exists():
-        print(f"[ERROR] graphs_dir does not exist: {graphs_dir}")
+    trajs = Path(args.trajs)
+    if not trajs.exists():
+        print(f"[ERROR] trajs does not exist: {trajs}")
         return 1
 
     eval_report = Path(args.eval_report)
@@ -107,7 +107,7 @@ def main() -> int:
         return 1
 
     # Inject configuration into the handler class
-    GraphHandler.graphs_dir       = graphs_dir
+    GraphHandler.trajs       = trajs
     GraphHandler.eval_report_path = str(eval_report)
     GraphHandler.cmd_parser       = setup_cmd_parser()
     GraphHandler.assets_dir       = assets_dir
@@ -117,7 +117,7 @@ def main() -> int:
     print(f"\n{'─'*60}")
     print(f"  Trajectory Graph Server")
     print(f"{'─'*60}")
-    print(f"  Graphs dir   : {graphs_dir.absolute()}")
+    print(f"  Graphs dir   : {trajs.absolute()}")
     print(f"  Eval report  : {eval_report.absolute()}")
     print(f"  Assets dir   : {assets_dir.absolute()}")
     print(f"  URL          : http://localhost:{args.port}")
