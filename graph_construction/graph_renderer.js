@@ -762,19 +762,12 @@ function fitToScreen() {
     updateTransform();
 }
 
-function resetZoom() {
-    currentScale = 1;
-    currentX = (graphEl.clientWidth  - graphWidth)  / 2;
-    currentY = (graphEl.clientHeight - graphHeight) / 2;
-    updateTransform();
-}
-
 function zoomIn() {
     const centerX = graphEl.clientWidth  / 2;
     const centerY = graphEl.clientHeight / 2;
     
     const oldScale = currentScale;
-    currentScale = Math.min(currentScale * 1.2, 3);
+    currentScale = currentScale * 1.2;
     const scaleRatio = currentScale / oldScale;
     
     currentX = centerX - (centerX - currentX) * scaleRatio;
@@ -788,7 +781,7 @@ function zoomOut() {
     const centerY = graphEl.clientHeight / 2;
     
     const oldScale = currentScale;
-    currentScale = Math.max(currentScale / 1.2, 0.3);
+    currentScale = currentScale / 1.2;
     const scaleRatio = currentScale / oldScale;
     
     currentX = centerX - (centerX - currentX) * scaleRatio;
@@ -808,7 +801,7 @@ function setupWheelZoom() {
         
         const oldScale = currentScale;
         const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1;
-        currentScale = Math.max(0.3, Math.min(3, currentScale * zoomDelta));
+        currentScale = currentScale * zoomDelta;
         
         const scaleRatio = currentScale / oldScale;
         currentX = mouseX - (mouseX - currentX) * scaleRatio;
