@@ -71,7 +71,7 @@ function wireSearch() {
 
 // ── CD toggle + new toggles ────────────────────────────────
 function wireToggle() {
-    ['filterCdToggle', 'thoughtQuotesToggle', 'nodeVerbosityToggle', 'observationToggle'].forEach(id => {
+    ['filterCdToggle', 'thoughtQuotesToggle', 'nodeVerbosityToggle', 'observationToggle', 'uniqueThinkToggle'].forEach(id => {
         document.getElementById(id).addEventListener('change', () => {
             if (activeId) loadGraph(activeId);
         });
@@ -92,6 +92,10 @@ function nodeVerbosity() {
 
 function showObservation() {
     return document.getElementById('observationToggle').checked;
+}
+
+function uniqueThink() {
+    return document.getElementById('uniqueThinkToggle').checked;
 }
 
 // ── Graph loading ──────────────────────────────────────────
@@ -130,6 +134,7 @@ async function loadGraph(instanceId) {
         thought_quotes: thoughtQuotes(),
         node_verbosity: nodeVerbosity(),
         show_observation: showObservation(),
+        unique_think:  uniqueThink(),
     });
     const url = `/api/graph?${params.toString()}`;
 

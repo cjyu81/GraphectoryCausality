@@ -69,12 +69,13 @@ class GraphHandler(BaseHTTPRequestHandler):
                 thought_quotes    = params.get("thought_quotes",  ["true"])[0].lower() == "true"
                 node_verbosity    = params.get("node_verbosity",  ["true"])[0].lower() == "true"
                 show_observation  = params.get("show_observation", ["false"])[0].lower() == "true"
+                unique_think      = params.get("unique_think",    ["true"])[0].lower() == "true"
                 
                 if not instance_id:
                     self._error(400, "Missing ?id= parameter")
                 else:
                     self._api_graph(instance_id, filter_cd, thought_quotes,
-                                   node_verbosity, show_observation)
+                                   node_verbosity, show_observation, unique_think)
 
             else:
                 self._error(404, "Not found")
@@ -91,7 +92,8 @@ class GraphHandler(BaseHTTPRequestHandler):
         self._respond_json(graphs)
 
     def _api_graph(self, instance_id: str, filter_cd: bool,
-                   thought_quotes: bool, node_verbosity: bool, show_observation: bool):
+                   thought_quotes: bool, node_verbosity: bool, show_observation: bool,
+                   unique_think: bool = True):
         traj_data = load_trajectory(self.graphs_dir, instance_id,
                                     agent_type=self.agent_type)
 
@@ -102,6 +104,7 @@ class GraphHandler(BaseHTTPRequestHandler):
             cmd_parser        = self.cmd_parser,
             filter_cd         = filter_cd,
             agent_type        = self.agent_type,
+            unique_think      = unique_think,
         )
 
         html = render_graph_html(G, filter_cd, thought_quotes, node_verbosity,

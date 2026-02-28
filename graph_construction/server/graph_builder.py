@@ -344,7 +344,8 @@ def _mark_thought_continuation(
 
 def _build_graph_oh(traj_data: dict, instance_id: str,
                     eval_report_path: str, cmd_parser,
-                    filter_cd: bool = True):
+                    filter_cd: bool = True,
+                    unique_think: bool = True):
     """Build a NetworkX MultiDiGraph from an OpenHands trajectory entry.
 
     OpenHands trajectories store tool calls inside ``history`` entries.
@@ -459,9 +460,13 @@ def _build_graph_oh(traj_data: dict, instance_id: str,
             flags      = parsed.get("flags", {})
 
             if tool == "think":
+                # When unique_think is on, use the thought text in the node
+                # signature so each distinct thought gets its own node.
+                # When off, all think steps collapse into one node (old behaviour).
+                think_args = {"_thought": thought} if unique_think else {}
                 node_key = builder.add_or_update_node(
                     node_label     = "think",
-                    args           = {},
+                    args           = think_args,
                     flags          = {},
                     phase          = "general",
                     step_idx       = step_idx,
@@ -584,7 +589,8 @@ def build_graph(traj_data: dict, instance_id: str,
                 eval_report_path: str, cmd_parser,
                 graphs_dir: Path | None = None,
                 filter_cd: bool = True,
-                agent_type: str = "sa"):
+                agent_type: str = "sa",
+                unique_think: bool = True):
     """Build and return a NetworkX MultiDiGraph from *traj_data*.
 
     The instance's tool config YAML is auto-discovered from:
@@ -615,7 +621,7 @@ def build_graph(traj_data: dict, instance_id: str,
     # Dispatch to agent-specific builder
     if agent_type == "oh":
         return _build_graph_oh(traj_data, instance_id, eval_report_path,
-                               cmd_parser, filter_cd)
+                               cmd_parser, filter_cd, unique_think=unique_think)
 
     # Build a per-instance parser loaded with this trajectory's config YAML
     if graphs_dir is not None:
@@ -649,9 +655,12 @@ def build_graph(traj_data: dict, instance_id: str,
 
         # ── Pure-think steps (blank action) ────────────────────────────
         if not action_str.strip():
+            # When unique_think is on, include thought text in the signature
+            # so each distinct thought gets its own node instead of collapsing.
+            think_args = {"_thought": thought} if unique_think else {"thought_len": thought_len_raw}
             node_key = builder.add_or_update_node(
                 node_label         = "think",
-                args               = {"thought_len": thought_len_raw},
+                args               = think_args,
                 flags              = {},
                 phase              = "general",
                 step_idx           = step_idx,
