@@ -372,7 +372,7 @@ def main():
         epilog="""
 Examples:
   # Generate heatmap using default data and figures directories
-  python trajectory_heatmap_plot.py
+  python plot/trajectory_heatmap_plot.py
 
   # Specify custom data directory
   python trajectory_heatmap_plot.py --data-dir ./my_data
