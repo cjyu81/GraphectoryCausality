@@ -8,6 +8,7 @@
 let allGraphs          = [];
 let activeId           = null;   // instance_id of selected graph, or null
 let sankeyActive       = false;  // true when Sankey pane is showing
+let bayesActive        = false;  // true when Bayesian pane is showing
 let dataSourceExpanded = false;
 
 /* =========================================================================
@@ -19,6 +20,7 @@ async function init() {
     wireToggles();
     wireEnterKey();
     skWireControls();
+    byWireControls();
 }
 
 /* =========================================================================
@@ -83,11 +85,14 @@ async function applyDataSource() {
 
         // Invalidate Sankey cache so next view triggers a fresh fetch
         skRawData = null;
+        byRawData = null;
+        bySelectedFeature = null;
 
         await loadGraphList();
 
         // If Sankey is currently showing, reload it with fresh data
         if (sankeyActive) skLoad();
+        if (bayesActive) byLoad(true);
 
     } catch (err) {
         showDsError(`Request failed: ${err.message}`);
@@ -203,12 +208,14 @@ const uniqueThink     = () => document.getElementById('uniqueThinkToggle').check
 function selectGraph(instanceId) {
     // Switch away from Sankey if needed
     if (sankeyActive) hideSankeyPane();
+    if (bayesActive) hideBayesPane();
 
     activeId = instanceId;
     document.querySelectorAll('.graph-item').forEach(el =>
         el.classList.toggle('active', el.dataset.id === instanceId)
     );
     document.getElementById('sankeyListItem').classList.remove('active');
+    document.getElementById('bayesListItem').classList.remove('active');
     loadGraph(instanceId);
 }
 
@@ -269,8 +276,10 @@ function injectGraph(html) {
 function selectSankey() {
     // Deselect any active graph item
     activeId = null;
+    if (bayesActive) hideBayesPane();
     document.querySelectorAll('.graph-item').forEach(el => el.classList.remove('active'));
     document.getElementById('sankeyListItem').classList.add('active');
+    document.getElementById('bayesListItem').classList.remove('active');
 
     showSankeyPane();
 }
@@ -278,6 +287,7 @@ function selectSankey() {
 function showSankeyPane() {
     sankeyActive = true;
     document.getElementById('graphPane').style.display  = 'none';
+    document.getElementById('bayesPane').style.display  = 'none';
     document.getElementById('sankeyPane').style.display = 'flex';
     // Fetch data if not yet loaded, otherwise redraw
     if (!skRawData) {
@@ -803,6 +813,294 @@ function skShowPlaceholder(msg = '') {
 }
 function skHidePlaceholder() {
     document.getElementById('skPlaceholder').style.display = 'none';
+}
+
+/* =========================================================================
+   Bayesian pane
+   ========================================================================= */
+const BY_PHASE_COLOR = {
+    localization: '#8c74e6',
+    patch: '#ee9463',
+    validation: '#4bb8d4',
+    general: '#7aa6da',
+};
+
+let byRawData = null;
+let bySelectedFeature = null;
+
+function byWireControls() {
+    ['byStatus', 'byFeatureType', 'bySort'].forEach(id => {
+        document.getElementById(id).addEventListener('change', () => byLoad(true));
+    });
+    ['byMinSupport', 'byTopN'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', e => {
+            if (e.key === 'Enter') byLoad(true);
+        });
+        document.getElementById(id).addEventListener('change', () => byLoad(true));
+    });
+}
+
+function selectBayes() {
+    activeId = null;
+    if (sankeyActive) hideSankeyPane();
+    document.querySelectorAll('.graph-item').forEach(el => el.classList.remove('active'));
+    document.getElementById('sankeyListItem').classList.remove('active');
+    document.getElementById('bayesListItem').classList.add('active');
+    showBayesPane();
+}
+
+function showBayesPane() {
+    bayesActive = true;
+    document.getElementById('graphPane').style.display = 'none';
+    document.getElementById('sankeyPane').style.display = 'none';
+    document.getElementById('bayesPane').style.display = 'flex';
+    if (!byRawData) byLoad(true);
+    else byRender();
+}
+
+function hideBayesPane() {
+    bayesActive = false;
+    document.getElementById('bayesPane').style.display = 'none';
+    document.getElementById('graphPane').style.display = '';
+}
+
+async function byLoad(force = false) {
+    if (!bayesActive && !force) return;
+
+    const btn = document.getElementById('byRefreshBtn');
+    const params = new URLSearchParams({
+        status: document.getElementById('byStatus').value,
+        feature_type: document.getElementById('byFeatureType').value,
+        min_support: normalizeIntInput('byMinSupport', 4, 1, 200),
+        max_features: normalizeIntInput('byTopN', 36, 5, 200),
+    });
+
+    btn.disabled = true;
+    document.getElementById('byStats').innerHTML = '<span>Loading Bayesian analysis...</span>';
+    document.getElementById('byFeatureList').innerHTML = '<div class="by-empty">Crunching posterior summaries...</div>';
+    document.getElementById('byDetail').innerHTML = '<div class="by-empty">Bayesian feature effects are loading.</div>';
+    document.getElementById('bySkyline').innerHTML = '';
+
+    try {
+        const res = await fetch(`/api/bayes?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        byRawData = await res.json();
+        bySelectedFeature = null;
+        byRender();
+    } catch (err) {
+        const msg = `<div class="by-empty">Failed to load analysis: ${escHtml(err.message)}</div>`;
+        document.getElementById('byFeatureList').innerHTML = msg;
+        document.getElementById('byDetail').innerHTML = msg;
+        document.getElementById('byStats').innerHTML = '<span>Analysis unavailable.</span>';
+        document.getElementById('bySkyline').innerHTML = '';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function byRender() {
+    if (!byRawData) return;
+    const features = [...(byRawData.features || [])];
+    const sortMode = document.getElementById('bySort').value;
+    features.sort((a, b) => bySortScore(b, sortMode) - bySortScore(a, sortMode));
+
+    document.getElementById('byStats').innerHTML = bySummaryHtml(byRawData.summary, features.length);
+    byRenderList(features);
+    byRenderSkyline(features);
+
+    if (!features.length) {
+        document.getElementById('byFeatureList').innerHTML = '<div class="by-empty">No features meet the current support and filter settings.</div>';
+        document.getElementById('byDetail').innerHTML = '<div class="by-empty">Try lowering the minimum support or broadening the status filter.</div>';
+        return;
+    }
+
+    if (!bySelectedFeature) bySelectedFeature = features[0].feature;
+    const selected = features.find(item => item.feature === bySelectedFeature) || features[0];
+    bySelectedFeature = selected.feature;
+    byRenderDetail(selected);
+    highlightBayesSelection();
+}
+
+function bySummaryHtml(summary, shownCount) {
+    return [
+        `<span><b>${summary.trajectory_count}</b> trajectories</span>`,
+        `<span><b>${summary.step_count}</b> steps</span>`,
+        `<span><b>${shownCount}</b> features shown</span>`,
+        `<span>Labeled outcomes: <b>${summary.labeled_trajectories}</b></span>`,
+        `<span>Resolved: <b>${summary.resolved_trajectories}</b></span>`,
+        `<span>Unresolved: <b>${summary.unresolved_trajectories}</b></span>`,
+    ].join('');
+}
+
+function bySortScore(item, sortMode) {
+    if (sortMode === 'support') return item.trajectory_support;
+    if (sortMode === 'process') return item.process.shift_magnitude;
+    if (sortMode === 'observation') return Math.abs(item.observation.lift_mean);
+    return Math.abs(item.outcome.lift_mean);
+}
+
+function byRenderList(features) {
+    const root = document.getElementById('byFeatureList');
+    root.innerHTML = features.map(item => {
+        const outcomeLift = formatSignedPct(item.outcome.lift_mean);
+        const obsLift = formatSignedPct(item.observation.lift_mean);
+        const processLift = formatSignedPct(item.process.dominant_delta);
+        return `
+            <div class="by-card${item.feature === bySelectedFeature ? ' active' : ''}" data-feature="${escHtml(item.feature)}" onclick="bySelectFeature('${escHtml(item.feature)}')">
+                <div class="by-card-top">
+                    <div class="by-card-title">${escHtml(item.label)}</div>
+                    <div class="by-pill">${escHtml(item.kind)}</div>
+                </div>
+                <div class="by-card-metrics">
+                    <div><b>${item.trajectory_support}</b>support</div>
+                    <div><b>${outcomeLift}</b>outcome</div>
+                    <div><b>${processLift}</b>process</div>
+                </div>
+                <div style="margin-top:8px;font-size:11px;color:#6d786f;">Step-success lift ${obsLift}</div>
+            </div>`;
+    }).join('');
+}
+
+function bySelectFeature(featureName) {
+    bySelectedFeature = featureName;
+    if (!byRawData) return;
+    const current = (byRawData.features || []).find(item => item.feature === featureName);
+    if (!current) return;
+    byRenderDetail(current);
+    highlightBayesSelection();
+}
+
+function highlightBayesSelection() {
+    document.querySelectorAll('.by-card').forEach(card => {
+        card.classList.toggle('active', card.dataset.feature === bySelectedFeature);
+    });
+}
+
+function byRenderDetail(item) {
+    const detail = document.getElementById('byDetail');
+    detail.innerHTML = `
+        <div class="by-feature-head">
+            <div class="by-kicker">${escHtml(item.kind)} feature</div>
+            <h2>${escHtml(item.label)}</h2>
+            <div class="by-feature-sub">
+                Present in <b>${item.trajectory_support}</b> trajectories and seen <b>${item.occurrence_count}</b> times.
+                Dominant next-phase pull: <b>${escHtml(item.process.dominant_phase)}</b> (${formatSignedPct(item.process.dominant_delta)}).
+            </div>
+        </div>
+        <div class="by-metric-grid">
+            ${byMetricBoxHtml('Resolved lift', formatSignedPct(item.outcome.lift_mean), `Present posterior ${formatPct(item.outcome.present_rate_mean)} · CI90 ${formatInterval(item.outcome.present_rate_ci90)}`)}
+            ${byMetricBoxHtml('Step-success lift', formatSignedPct(item.observation.lift_mean), `Present posterior ${formatPct(item.observation.present_rate_mean)} · CI90 ${formatInterval(item.observation.present_rate_ci90)}`)}
+            ${byMetricBoxHtml('Support share', formatPct(item.trajectory_share), `Labeled trajectories with feature: ${item.labeled_trajectory_support}`)}
+            ${byMetricBoxHtml('Process shift', formatPct(item.process.shift_magnitude), `Compared with the global next-phase baseline.`)}
+        </div>
+        <div>
+            <div class="by-kicker">Outcome posterior</div>
+            <div class="by-feature-sub">
+                Present: <b>${formatPct(item.outcome.present_rate_mean)}</b> (${formatInterval(item.outcome.present_rate_ci90)})<br>
+                Absent: <b>${formatPct(item.outcome.absent_rate_mean)}</b> (${formatInterval(item.outcome.absent_rate_ci90)})
+            </div>
+        </div>
+        <div>
+            <div class="by-kicker">Next-phase deltas</div>
+            <div class="by-phase-bars">${byPhaseRowsHtml(item.process.deltas)}</div>
+        </div>
+    `;
+}
+
+function byMetricBoxHtml(title, big, small) {
+    return `<div class="by-metric-box"><h4>${title}</h4><div class="big">${big}</div><div class="small">${small}</div></div>`;
+}
+
+function byPhaseRowsHtml(deltas) {
+    return Object.entries(deltas).map(([phase, delta]) => {
+        const width = `${Math.min(100, Math.round(Math.abs(delta) * 400))}%`;
+        const color = delta >= 0 ? (BY_PHASE_COLOR[phase] || '#7aa6da') : '#d96f6f';
+        return `
+            <div class="by-phase-row">
+                <div>${escHtml(skCap(phase))}</div>
+                <div class="by-phase-bar"><div class="by-phase-fill" style="width:${width};background:${color};"></div></div>
+                <div>${formatSignedPct(delta)}</div>
+            </div>`;
+    }).join('');
+}
+
+function byRenderSkyline(features) {
+    const svg = document.getElementById('bySkyline');
+    const wrap = document.getElementById('bySkylineWrap');
+    const width = Math.max(420, wrap.clientWidth - 12);
+    const height = 360;
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+    svg.innerHTML = '';
+
+    if (!features.length) return;
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const pad = { left: 48, right: 18, top: 18, bottom: 32 };
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const maxSupport = Math.max(...features.map(item => item.trajectory_support), 1);
+
+    const axis = document.createElementNS(ns, 'g');
+    axis.innerHTML = `
+        <line x1="${pad.left}" y1="${pad.top + plotH}" x2="${width - pad.right}" y2="${pad.top + plotH}" stroke="#cbd7ce" />
+        <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + plotH}" stroke="#cbd7ce" />
+        <line x1="${pad.left + plotW / 2}" y1="${pad.top}" x2="${pad.left + plotW / 2}" y2="${pad.top + plotH}" stroke="#dfe7e1" stroke-dasharray="4 4" />
+        <text x="${pad.left}" y="${height - 8}" font-size="11" fill="#748279">Worse outcome lift</text>
+        <text x="${pad.left + plotW / 2 - 18}" y="${height - 8}" font-size="11" fill="#748279">0</text>
+        <text x="${width - 108}" y="${height - 8}" font-size="11" fill="#748279">Better outcome lift</text>
+        <text x="10" y="${pad.top + 12}" font-size="11" fill="#748279">Support</text>
+    `;
+    svg.appendChild(axis);
+
+    for (const item of features) {
+        const x = pad.left + ((item.outcome.lift_mean + 0.5) / 1.0) * plotW;
+        const y = pad.top + plotH - (item.trajectory_support / maxSupport) * plotH;
+        const circle = document.createElementNS(ns, 'circle');
+        circle.setAttribute('cx', Math.max(pad.left, Math.min(width - pad.right, x)));
+        circle.setAttribute('cy', y);
+        circle.setAttribute('r', 6 + item.process.shift_magnitude * 26);
+        circle.setAttribute('fill', item.outcome.lift_mean >= 0 ? '#2f8f5b' : '#d07070');
+        circle.setAttribute('fill-opacity', '0.75');
+        circle.setAttribute('stroke', item.feature === bySelectedFeature ? '#173420' : '#ffffff');
+        circle.setAttribute('stroke-width', item.feature === bySelectedFeature ? '2' : '1');
+        circle.style.cursor = 'pointer';
+        circle.addEventListener('click', () => bySelectFeature(item.feature));
+        svg.appendChild(circle);
+
+        if (item.feature === bySelectedFeature || item.trajectory_support === maxSupport) {
+            const label = document.createElementNS(ns, 'text');
+            label.setAttribute('x', Math.max(pad.left, Math.min(width - pad.right - 90, x + 8)));
+            label.setAttribute('y', y - 8);
+            label.setAttribute('font-size', '10');
+            label.setAttribute('fill', '#304236');
+            label.textContent = item.label;
+            svg.appendChild(label);
+        }
+    }
+}
+
+function normalizeIntInput(id, fallback, min, max) {
+    const input = document.getElementById(id);
+    const raw = parseInt(input.value, 10);
+    const normalized = Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : fallback;
+    input.value = normalized;
+    return normalized;
+}
+
+function formatPct(value) {
+    return `${Math.round((value || 0) * 100)}%`;
+}
+
+function formatSignedPct(value) {
+    const pct = Math.round((value || 0) * 100);
+    return `${pct > 0 ? '+' : ''}${pct}%`;
+}
+
+function formatInterval(ci) {
+    if (!Array.isArray(ci) || ci.length !== 2) return 'n/a';
+    return `${formatPct(ci[0])} to ${formatPct(ci[1])}`;
 }
 
 /* =========================================================================

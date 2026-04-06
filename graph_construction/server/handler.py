@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from server.bayesian_analysis import analyze_feature_effects
 from server.graph_builder  import scan_trajectories, load_trajectory, build_graph
 from server.graph_renderer import render_graph_html
 
@@ -63,6 +64,7 @@ class GraphHandler(BaseHTTPRequestHandler):
     _graphs_cache: Optional[list]   = None
     _render_cache: dict[tuple, str] = {}
     _sankey_cache: Optional[dict]   = None   # keyed on graphs_dir + eval_report_path
+    _bayes_cache:  dict[tuple, dict] = {}
 
     # ── Logging ──────────────────────────────────────────────────────────────
 
@@ -103,6 +105,14 @@ class GraphHandler(BaseHTTPRequestHandler):
 
             elif path == "/api/sankey":
                 self._api_sankey()
+
+            elif path == "/api/bayes":
+                self._api_bayes(
+                    status_filter=params.get("status", ["all"])[0],
+                    feature_type=params.get("feature_type", ["all"])[0],
+                    min_support=_int_param(params, "min_support", default=4, minimum=1, maximum=200),
+                    max_features=_int_param(params, "max_features", default=40, minimum=5, maximum=200),
+                )
 
             elif path == "/sankey":
                 # Serve the Sankey page from static dir
@@ -227,6 +237,7 @@ class GraphHandler(BaseHTTPRequestHandler):
             GraphHandler._graphs_cache    = None
             GraphHandler._render_cache    = {}
             GraphHandler._sankey_cache    = None
+            GraphHandler._bayes_cache     = {}
 
         self._respond_json({
             "ok":          True,
@@ -348,6 +359,41 @@ class GraphHandler(BaseHTTPRequestHandler):
 
         with self._cache_lock:
             GraphHandler._sankey_cache = result
+
+        self._respond_json(result)
+
+    def _api_bayes(
+        self,
+        *,
+        status_filter: str,
+        feature_type: str,
+        min_support: int,
+        max_features: int,
+    ):
+        """Return Bayesian feature-effect summaries for trajectory text patterns."""
+        cache_key = (status_filter, feature_type, min_support, max_features)
+
+        with self._cache_lock:
+            cached = self._bayes_cache.get(cache_key)
+        if cached is not None:
+            logger.info("[handler] Bayesian analysis cache hit.")
+            self._respond_json(cached)
+            return
+
+        logger.info("[handler] Building Bayesian analysis (cache miss).")
+        result = analyze_feature_effects(
+            self.graphs_dir,
+            self.eval_report_path,
+            self.agent_type,
+            self.cmd_parser,
+            status_filter=status_filter,
+            feature_type=feature_type,
+            min_support=min_support,
+            max_features=max_features,
+        )
+
+        with self._cache_lock:
+            self._bayes_cache[cache_key] = result
 
         self._respond_json(result)
 
@@ -595,3 +641,22 @@ def _bool_param(params: dict, key: str, *, default: bool) -> bool:
     if raw is None:
         return default
     return raw.lower() == "true"
+
+
+def _int_param(
+    params: dict,
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Parse and clamp an integer query-string parameter."""
+    raw = params.get(key, [None])[0]
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))

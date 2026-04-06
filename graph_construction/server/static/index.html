@@ -6,17 +6,18 @@
     <title>Trajectory Graph Browser</title>
     <link rel="stylesheet" href="/static/browser.css">
     <style>
-        /* ── Sankey list-item button ─────────────────────────────── */
-        .sankey-item {
+        .sankey-item, .bayes-item {
             padding: 10px 14px;
-            border-bottom: 2px solid #dde0f5;
             cursor: pointer;
             transition: background .15s;
-            background: #f5f7ff;
             display: flex;
             align-items: center;
             gap: 10px;
             flex-shrink: 0;
+        }
+        .sankey-item {
+            border-bottom: 2px solid #dde0f5;
+            background: #f5f7ff;
         }
         .sankey-item:hover { background: #eaedff; }
         .sankey-item.active {
@@ -24,121 +25,373 @@
             border-left: 3px solid #667eea;
             padding-left: 11px;
         }
+        .bayes-item {
+            border-bottom: 2px solid #d8eadc;
+            background: #f3fbf5;
+        }
+        .bayes-item:hover { background: #e9f7ec; }
+        .bayes-item.active {
+            background: #edf9f0;
+            border-left: 3px solid #2f8f5b;
+            padding-left: 11px;
+        }
         .sankey-item-icon { font-size: 20px; flex-shrink: 0; line-height: 1; }
         .sankey-item-title { font-size: 13px; font-weight: 700; color: #3b4ecc; }
-        .sankey-item-sub   { font-size: 11px; color: #888; margin-top: 1px; }
+        .sankey-item-sub { font-size: 11px; color: #888; margin-top: 1px; }
+        .bayes-item-title { font-size: 13px; font-weight: 700; color: #246b44; }
+        .bayes-item-sub { font-size: 11px; color: #7a857b; margin-top: 1px; }
 
-        /* ── Sankey pane (lives alongside graphPane in .main) ─────── */
-        #sankeyPane {
+        #sankeyPane,
+        #bayesPane {
             display: none;
             flex-direction: column;
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #f0f2f5;
+        }
+        #sankeyPane { background: #f0f2f5; }
+        #bayesPane {
+            background:
+                radial-gradient(circle at top left, rgba(88, 180, 120, .10), transparent 35%),
+                linear-gradient(180deg, #eef5ef 0%, #f7f9f7 100%);
         }
 
-        /* Controls bar */
-        .sk-controls {
-            background: #fff;
-            border-bottom: 1px solid #e8eaed;
+        .sk-controls,
+        .by-controls {
+            background: rgba(255,255,255,.92);
+            border-bottom: 1px solid #dde6df;
             padding: 10px 20px;
             display: flex;
             align-items: center;
-            gap: 18px;
+            gap: 16px;
             flex-wrap: wrap;
             flex-shrink: 0;
         }
-        .sk-ctrl { display: flex; align-items: center; gap: 7px; }
-        .sk-ctrl label { font-size: 12px; font-weight: 600; color: #555; white-space: nowrap; }
-        .sk-ctrl select {
-            font-size: 12px; border: 1.5px solid #d1d5db; border-radius: 6px;
-            padding: 4px 7px; outline: none; background: #fff;
+        .sk-ctrl, .by-ctrl { display: flex; align-items: center; gap: 7px; }
+        .sk-ctrl label, .by-ctrl label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #4d5d51;
+            white-space: nowrap;
         }
-        .sk-ctrl select:focus { border-color: #667eea; }
-
-        /* Slider + number combo */
+        .sk-ctrl select,
+        .sk-combo input[type=number],
+        .by-ctrl select,
+        .by-ctrl input[type=number] {
+            font-size: 12px;
+            border: 1.5px solid #c7d6cb;
+            border-radius: 8px;
+            padding: 4px 7px;
+            outline: none;
+            background: #fff;
+            color: #213126;
+        }
+        .sk-ctrl select:focus,
+        .sk-combo input[type=number]:focus,
+        .by-ctrl select:focus,
+        .by-ctrl input[type=number]:focus { border-color: #667eea; }
         .sk-combo { display: flex; align-items: center; gap: 5px; }
         .sk-combo input[type=range] { width: 80px; accent-color: #667eea; }
         .sk-combo input[type=number] {
-            width: 52px; font-size: 12px; font-weight: 600; color: #667eea;
-            border: 1.5px solid #d1d5db; border-radius: 6px;
-            padding: 3px 5px; outline: none; text-align: center;
+            width: 52px;
+            font-weight: 600;
+            color: #667eea;
+            text-align: center;
             -moz-appearance: textfield;
         }
-        .sk-combo input[type=number]:focus { border-color: #667eea; }
+        .by-ctrl input[type=number] { width: 72px; }
         .sk-combo input[type=number]::-webkit-inner-spin-button,
         .sk-combo input[type=number]::-webkit-outer-spin-button { opacity: 1; }
+        .by-refresh {
+            border: none;
+            border-radius: 9px;
+            padding: 7px 14px;
+            background: linear-gradient(135deg, #2f8f5b 0%, #74b55d 100%);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .by-refresh:disabled { opacity: .6; cursor: default; }
 
-        /* Phase chips */
         .sk-chips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
         .sk-chip {
-            padding: 3px 11px; border-radius: 20px; font-size: 11px; font-weight: 700;
-            cursor: pointer; border: 2px solid transparent;
-            transition: opacity .15s, border-color .15s; user-select: none;
+            padding: 3px 11px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: opacity .15s, border-color .15s;
+            user-select: none;
         }
-        .sk-chip.active   { border-color: #2c3e50; opacity: 1; }
+        .sk-chip.active { border-color: #2c3e50; opacity: 1; }
         .sk-chip.inactive { opacity: .32; }
-        .sk-chip-loc   { background: #C5B3F0; color: #2c3e50; }
+        .sk-chip-loc { background: #C5B3F0; color: #2c3e50; }
         .sk-chip-patch { background: #FCC9B0; color: #2c3e50; }
-        .sk-chip-val   { background: #A8E6F0; color: #2c3e50; }
-        .sk-chip-gen   { background: #CFE0F6; color: #2c3e50; }
+        .sk-chip-val { background: #A8E6F0; color: #2c3e50; }
+        .sk-chip-gen { background: #CFE0F6; color: #2c3e50; }
 
-        /* Stats strip */
-        .sk-stats {
-            background: #fff; border-bottom: 1px solid #e8eaed;
-            padding: 6px 20px; display: flex; gap: 20px;
-            font-size: 12px; color: #666; flex-shrink: 0;
+        .sk-stats,
+        .by-stats {
+            background: rgba(255,255,255,.92);
+            border-bottom: 1px solid #dde6df;
+            padding: 8px 20px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: #5b685d;
+            flex-shrink: 0;
         }
-        .sk-stats b { color: #2c3e50; }
+        .sk-stats b,
+        .by-stats b { color: #203326; }
 
-        /* SVG scroll area */
         .sk-canvas { flex: 1; overflow: auto; padding: 20px; min-height: 0; }
         #sk-svg {
-            display: block; background: #fff;
-            border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            display: block;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
         }
-
-        /* Placeholder / spinner inside sankey pane */
         .sk-placeholder {
-            display: flex; flex-direction: column; align-items: center;
-            justify-content: center; gap: 12px; padding: 60px 20px;
-            color: #aaa; font-size: 14px; flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 60px 20px;
+            color: #aaa;
+            font-size: 14px;
+            flex: 1;
         }
         .sk-spinner {
-            width: 32px; height: 32px;
-            border: 3px solid #e5e7eb; border-top-color: #667eea;
-            border-radius: 50%; animation: sk-spin .8s linear infinite;
+            width: 32px;
+            height: 32px;
+            border: 3px solid #e5e7eb;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: sk-spin .8s linear infinite;
         }
         @keyframes sk-spin { to { transform: rotate(360deg); } }
 
-        /* Tooltip */
         #sk-tooltip {
-            position: fixed; background: rgba(22,28,36,.96); color: #e0e0e0;
-            padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.6;
-            pointer-events: none; z-index: 9999; max-width: 300px;
-            box-shadow: 0 6px 20px rgba(0,0,0,.4); display: none;
+            position: fixed;
+            background: rgba(22,28,36,.96);
+            color: #e0e0e0;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.6;
+            pointer-events: none;
+            z-index: 9999;
+            max-width: 300px;
+            box-shadow: 0 6px 20px rgba(0,0,0,.4);
+            display: none;
             border: 1px solid rgba(255,255,255,.1);
+        }
+
+        .by-layout {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(320px, 1.2fr) minmax(340px, .9fr);
+            gap: 18px;
+            padding: 18px;
+        }
+        .by-panel {
+            min-height: 0;
+            background: rgba(255,255,255,.90);
+            border: 1px solid rgba(164, 188, 169, .45);
+            border-radius: 18px;
+            box-shadow: 0 10px 34px rgba(36, 54, 41, .08);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .by-panel-head {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid #e6eee7;
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .by-panel-head h3 { font-size: 14px; color: #203326; }
+        .by-panel-head span { font-size: 11px; color: #76847a; }
+        .by-canvas {
+            flex: 1;
+            min-height: 260px;
+            padding: 10px 14px 16px;
+            overflow: auto;
+        }
+        #bySkyline {
+            width: 100%;
+            min-height: 360px;
+            display: block;
+        }
+        .by-list {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 10px 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .by-card {
+            border: 1px solid #e3ece4;
+            border-radius: 14px;
+            padding: 12px 12px 10px;
+            background: linear-gradient(180deg, #ffffff 0%, #f9fcf9 100%);
+            cursor: pointer;
+            transition: transform .12s, box-shadow .12s, border-color .12s;
+        }
+        .by-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(40, 72, 46, .08);
+            border-color: #cbe0d0;
+        }
+        .by-card.active {
+            border-color: #2f8f5b;
+            box-shadow: 0 8px 24px rgba(47, 143, 91, .14);
+        }
+        .by-card-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 7px;
+        }
+        .by-card-title {
+            font-size: 14px;
+            font-weight: 800;
+            color: #203326;
+            word-break: break-word;
+        }
+        .by-pill {
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            background: #eef5ef;
+            color: #38684a;
+            flex-shrink: 0;
+        }
+        .by-card-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 7px;
+            font-size: 11px;
+            color: #667369;
+        }
+        .by-card-metrics b { display: block; font-size: 13px; color: #213126; }
+        .by-detail {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 14px 16px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .by-empty {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: #8a968e;
+            font-size: 13px;
+            padding: 30px;
+        }
+        .by-kicker {
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            color: #6a7f71;
+        }
+        .by-feature-head h2 {
+            font-size: 24px;
+            color: #16311f;
+            margin-top: 4px;
+            word-break: break-word;
+        }
+        .by-feature-sub {
+            font-size: 13px;
+            color: #667369;
+            line-height: 1.5;
+        }
+        .by-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .by-metric-box {
+            border: 1px solid #e3ece4;
+            border-radius: 14px;
+            padding: 12px;
+            background: #fbfdfb;
+        }
+        .by-metric-box h4 { font-size: 12px; color: #4f6054; margin-bottom: 7px; }
+        .by-metric-box .big { font-size: 22px; font-weight: 800; color: #173420; }
+        .by-metric-box .small { font-size: 11px; color: #6d786f; margin-top: 4px; line-height: 1.5; }
+        .by-phase-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .by-phase-row {
+            display: grid;
+            grid-template-columns: 94px 1fr 58px;
+            gap: 10px;
+            align-items: center;
+            font-size: 12px;
+            color: #435247;
+        }
+        .by-phase-bar {
+            position: relative;
+            height: 12px;
+            border-radius: 999px;
+            background: #edf2ee;
+            overflow: hidden;
+        }
+        .by-phase-fill {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            border-radius: 999px;
+        }
+        @media (max-width: 1100px) {
+            .by-layout { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>📊 Trajectory Viewer</h1>
+            <h1>Trajectory Viewer</h1>
             <p class="subtitle">Graph representations of agent trajectories</p>
         </div>
 
-        <!-- ── Sankey shortcut ──────────────────────────────────── -->
         <div class="sankey-item" id="sankeyListItem" onclick="selectSankey()">
-            <span class="sankey-item-icon">🌊</span>
+            <span class="sankey-item-icon">S</span>
             <div>
                 <div class="sankey-item-title">Phase Sankey Diagram</div>
                 <div class="sankey-item-sub">Aggregate phase flows across all trajectories</div>
             </div>
         </div>
+        <div class="bayes-item" id="bayesListItem" onclick="selectBayes()">
+            <span class="sankey-item-icon">B</span>
+            <div>
+                <div class="bayes-item-title">Bayesian Evidence Studio</div>
+                <div class="bayes-item-sub">Token and sequence effects on process and outcomes</div>
+            </div>
+        </div>
 
-        <!-- ── Data source configurator ────────────────────────── -->
         <div class="data-source" id="dataSource">
             <button class="data-source-toggle" id="dataSourceToggle" onclick="toggleDataSource()">
                 <span id="dataSourceLabel">Data source</span>
@@ -157,10 +410,9 @@
             </div>
         </div>
 
-        <!-- ── Toggles + search ─────────────────────────────────── -->
         <div class="controls">
             <input type="text" id="searchInput" class="search-input"
-                placeholder="Search instances…" autofocus>
+                placeholder="Search instances..." autofocus>
             <label class="toggle-row">
                 <span class="toggle-label">Verbose node labels</span>
                 <div class="toggle-wrap">
@@ -176,7 +428,7 @@
                 </div>
             </label>
             <label class="toggle-row">
-                <span class="toggle-label">Filter cd (show ▲ hat)</span>
+                <span class="toggle-label">Filter cd (show hat)</span>
                 <div class="toggle-wrap">
                     <input type="checkbox" id="filterCdToggle">
                     <span class="toggle-slider"></span>
@@ -198,10 +450,10 @@
             </label>
         </div>
 
-        <div class="stats" id="stats">—</div>
+        <div class="stats" id="stats">-</div>
         <div class="graph-list" id="graphList">
             <div class="placeholder" style="position:relative;padding:40px;text-align:center;">
-                <span style="font-size:36px;opacity:.25;">📂</span>
+                <span style="font-size:36px;opacity:.25;">...</span>
                 <p style="margin-top:12px;color:#aaa;font-size:13px;">
                     Set a data source above to load trajectories.
                 </p>
@@ -209,19 +461,15 @@
         </div>
     </div>
 
-    <!-- ── Main area: graph pane + sankey pane (only one shown) ─── -->
     <div class="main">
-        <!-- Graph pane (iframe) -->
         <div id="graphPane" class="graph-pane">
             <div class="placeholder">
-                <span class="placeholder-icon">📊</span>
+                <span class="placeholder-icon">G</span>
                 <p>Select a graph from the list</p>
             </div>
         </div>
 
-        <!-- Sankey pane (inline, no iframe) -->
         <div id="sankeyPane">
-            <!-- Controls -->
             <div class="sk-controls">
                 <div class="sk-ctrl">
                     <label for="skStatus">Status</label>
@@ -235,38 +483,100 @@
                 <div class="sk-ctrl">
                     <label>Max steps</label>
                     <div class="sk-combo">
-                        <input type="range"  id="skMaxStepsSlider" min="5" max="60" value="30" step="1">
-                        <input type="number" id="skMaxStepsNum"    min="5" max="60" value="30" step="1">
+                        <input type="range" id="skMaxStepsSlider" min="5" max="60" value="30" step="1">
+                        <input type="number" id="skMaxStepsNum" min="5" max="60" value="30" step="1">
                     </div>
                 </div>
                 <div class="sk-ctrl">
                     <label>Min flow</label>
                     <div class="sk-combo">
-                        <input type="range"  id="skMinFlowSlider" min="0" max="50" value="1" step="1">
-                        <input type="number" id="skMinFlowNum"    min="0" max="50" value="1" step="1">
+                        <input type="range" id="skMinFlowSlider" min="0" max="50" value="1" step="1">
+                        <input type="number" id="skMinFlowNum" min="0" max="50" value="1" step="1">
                     </div>
                 </div>
                 <div class="sk-ctrl">
                     <label>Phases</label>
                     <div class="sk-chips">
-                        <div class="sk-chip sk-chip-loc active"   data-phase="localization">Localization</div>
+                        <div class="sk-chip sk-chip-loc active" data-phase="localization">Localization</div>
                         <div class="sk-chip sk-chip-patch active" data-phase="patch">Patch</div>
-                        <div class="sk-chip sk-chip-val active"   data-phase="validation">Validation</div>
-                        <div class="sk-chip sk-chip-gen active"   data-phase="general">General</div>
+                        <div class="sk-chip sk-chip-val active" data-phase="validation">Validation</div>
+                        <div class="sk-chip sk-chip-gen active" data-phase="general">General</div>
                     </div>
                 </div>
             </div>
-
-            <!-- Stats strip -->
-            <div class="sk-stats" id="skStats"><span>—</span></div>
-
-            <!-- Canvas -->
+            <div class="sk-stats" id="skStats"><span>-</span></div>
             <div class="sk-canvas" id="skCanvas">
                 <div class="sk-placeholder" id="skPlaceholder">
-                    <span style="font-size:40px;opacity:.25">🌊</span>
+                    <span style="font-size:40px;opacity:.25">S</span>
                     <span>Load trajectories to view the Sankey diagram</span>
                 </div>
                 <svg id="sk-svg" style="display:none;"></svg>
+            </div>
+        </div>
+
+        <div id="bayesPane">
+            <div class="by-controls">
+                <div class="by-ctrl">
+                    <label for="byStatus">Status</label>
+                    <select id="byStatus">
+                        <option value="all">All trajectories</option>
+                        <option value="resolved">Resolved only</option>
+                        <option value="unresolved">Unresolved only</option>
+                        <option value="unsubmitted">Unsubmitted only</option>
+                    </select>
+                </div>
+                <div class="by-ctrl">
+                    <label for="byFeatureType">Feature type</label>
+                    <select id="byFeatureType">
+                        <option value="all">Tokens + sequences</option>
+                        <option value="token">Tokens only</option>
+                        <option value="sequence">Sequences only</option>
+                    </select>
+                </div>
+                <div class="by-ctrl">
+                    <label for="bySort">Sort</label>
+                    <select id="bySort">
+                        <option value="outcome">Outcome lift</option>
+                        <option value="process">Process shift</option>
+                        <option value="observation">Step success lift</option>
+                        <option value="support">Support</option>
+                    </select>
+                </div>
+                <div class="by-ctrl">
+                    <label for="byMinSupport">Min support</label>
+                    <input type="number" id="byMinSupport" min="1" max="200" value="4">
+                </div>
+                <div class="by-ctrl">
+                    <label for="byTopN">Top features</label>
+                    <input type="number" id="byTopN" min="5" max="200" value="36">
+                </div>
+                <button class="by-refresh" id="byRefreshBtn" onclick="byLoad(true)">Refresh</button>
+            </div>
+            <div class="by-stats" id="byStats"><span>-</span></div>
+            <div class="by-layout">
+                <div class="by-panel">
+                    <div class="by-panel-head">
+                        <h3>Effect Skyline</h3>
+                        <span>Resolved lift on x, support on y, process shift called out</span>
+                    </div>
+                    <div class="by-canvas" id="bySkylineWrap">
+                        <svg id="bySkyline"></svg>
+                    </div>
+                    <div class="by-panel-head" style="border-top:1px solid #e6eee7;border-bottom:none;">
+                        <h3>Feature Board</h3>
+                        <span>Click any feature for posterior details</span>
+                    </div>
+                    <div class="by-list" id="byFeatureList"></div>
+                </div>
+                <div class="by-panel">
+                    <div class="by-panel-head">
+                        <h3>Posterior Detail</h3>
+                        <span>Credible intervals and next-phase shifts</span>
+                    </div>
+                    <div class="by-detail" id="byDetail">
+                        <div class="by-empty">Load the Bayesian view and select a feature to inspect its estimated effects.</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
