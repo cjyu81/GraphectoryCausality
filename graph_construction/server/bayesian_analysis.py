@@ -74,6 +74,8 @@ class StepRecord:
     phase: str
     text: str
     observation_outcome: str
+    tools: list[str]
+    commands: list[str]
 
 
 def analyze_feature_effects(
@@ -86,9 +88,12 @@ def analyze_feature_effects(
     feature_type: str = "all",
     min_support: int = 4,
     max_features: int = 40,
+    instance_filter: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build a Bayesian feature summary across trajectories."""
     metadata = scan_trajectories(graphs_dir, eval_report_path, agent_type=agent_type)
+    if instance_filter is not None:
+        metadata = [m for m in metadata if m.get("instance_id") in instance_filter]
     if status_filter != "all":
         metadata = [m for m in metadata if m.get("status") == status_filter]
 
@@ -121,6 +126,7 @@ def analyze_feature_effects(
                 "unresolved_trajectories": 0,
             },
             "features": [],
+            "command_usage": _empty_command_usage(),
         }
 
     feature_stats: dict[str, dict[str, Any]] = defaultdict(_new_feature_stat)
@@ -267,6 +273,12 @@ def analyze_feature_effects(
             "next_phase_events": baseline_next_total,
         },
         "features": features,
+        "command_usage": _analyze_command_usage(
+            trajectory_rows,
+            total_steps=total_steps,
+            min_support=min_support,
+            max_items=max(8, min(16, max_features)),
+        ),
     }
 
 
@@ -277,6 +289,29 @@ def _new_feature_stat() -> dict[str, Any]:
         "labeled_status_counts": Counter(),
         "observation_outcomes": Counter(),
         "next_phase_counts": Counter(),
+    }
+
+
+def _new_usage_stat() -> dict[str, Any]:
+    return {
+        "trajectory_support": 0,
+        "step_support": 0,
+        "status_support": Counter(),
+        "phase_counts": Counter(),
+        "companions": Counter(),
+    }
+
+
+def _empty_command_usage() -> dict[str, Any]:
+    return {
+        "summary": {
+            "trajectory_count": 0,
+            "step_count": 0,
+            "unique_tools": 0,
+            "unique_commands": 0,
+        },
+        "top_tools": [],
+        "top_commands": [],
     }
 
 
@@ -348,6 +383,178 @@ def _beta_mean_ci(successes: int, failures: int) -> tuple[float, list[float]]:
     return round(mean, 4), [round(low, 4), round(high, 4)]
 
 
+def _rate_summary(successes: int, total: int) -> dict[str, Any] | None:
+    if total <= 0:
+        return None
+    mean, ci = _beta_mean_ci(successes, max(0, total - successes))
+    return {
+        "mean": mean,
+        "ci90": ci,
+        "count": successes,
+        "total": total,
+    }
+
+
+def _analyze_command_usage(
+    trajectory_rows: list[dict[str, Any]],
+    *,
+    total_steps: int,
+    min_support: int,
+    max_items: int,
+) -> dict[str, Any]:
+    tool_stats: dict[str, dict[str, Any]] = defaultdict(_new_usage_stat)
+    command_stats: dict[str, dict[str, Any]] = defaultdict(_new_usage_stat)
+    baseline_phase_counts = Counter()
+    labeled_counts = Counter()
+
+    for row in trajectory_rows:
+        steps = row["steps"]
+        status = row["status"]
+        seen_tools: set[str] = set()
+        seen_commands: set[str] = set()
+
+        if status in STATUS_OUTCOME_KEYS:
+            labeled_counts[status] += 1
+
+        for step in steps:
+            baseline_phase_counts[step.phase] += 1
+
+            step_tools = {label for label in step.tools if label and label != "think"}
+            step_commands = {label for label in step.commands if label and label != "think"}
+
+            for label in step_tools:
+                stat = tool_stats[label]
+                stat["step_support"] += 1
+                stat["phase_counts"][step.phase] += 1
+                seen_tools.add(label)
+
+            for label in step_commands:
+                stat = command_stats[label]
+                stat["step_support"] += 1
+                stat["phase_counts"][step.phase] += 1
+                seen_commands.add(label)
+
+        for label in seen_tools:
+            stat = tool_stats[label]
+            stat["trajectory_support"] += 1
+            if status in STATUS_OUTCOME_KEYS:
+                stat["status_support"][status] += 1
+            stat["companions"].update(other for other in seen_tools if other != label)
+
+        for label in seen_commands:
+            stat = command_stats[label]
+            stat["trajectory_support"] += 1
+            if status in STATUS_OUTCOME_KEYS:
+                stat["status_support"][status] += 1
+            stat["companions"].update(other for other in seen_commands if other != label)
+
+    baseline_phase = _dirichlet_posterior_dict(baseline_phase_counts, PHASES)
+    resolved_total = labeled_counts["resolved"]
+    unresolved_total = labeled_counts["unresolved"]
+    total_trajectories = len(trajectory_rows)
+
+    return {
+        "summary": {
+            "trajectory_count": total_trajectories,
+            "step_count": total_steps,
+            "unique_tools": len(tool_stats),
+            "unique_commands": len(command_stats),
+            "resolved_trajectories": resolved_total,
+            "unresolved_trajectories": unresolved_total,
+            "baseline_phase": baseline_phase,
+        },
+        "top_tools": _finalize_usage_items(
+            tool_stats,
+            baseline_phase=baseline_phase,
+            total_trajectories=total_trajectories,
+            total_steps=total_steps,
+            resolved_total=resolved_total,
+            unresolved_total=unresolved_total,
+            min_support=min_support,
+            max_items=max_items,
+        ),
+        "top_commands": _finalize_usage_items(
+            command_stats,
+            baseline_phase=baseline_phase,
+            total_trajectories=total_trajectories,
+            total_steps=total_steps,
+            resolved_total=resolved_total,
+            unresolved_total=unresolved_total,
+            min_support=min_support,
+            max_items=max_items,
+        ),
+    }
+
+
+def _finalize_usage_items(
+    stats: dict[str, dict[str, Any]],
+    *,
+    baseline_phase: dict[str, float],
+    total_trajectories: int,
+    total_steps: int,
+    resolved_total: int,
+    unresolved_total: int,
+    min_support: int,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    items = []
+    for label, stat in stats.items():
+        trajectory_support = stat["trajectory_support"]
+        if trajectory_support < min_support:
+            continue
+
+        trajectory_rate = _rate_summary(trajectory_support, total_trajectories)
+        step_rate = _rate_summary(stat["step_support"], total_steps)
+        resolved_rate = _rate_summary(stat["status_support"]["resolved"], resolved_total)
+        unresolved_rate = _rate_summary(stat["status_support"]["unresolved"], unresolved_total)
+        status_gap = None
+        if resolved_rate and unresolved_rate:
+            status_gap = round(resolved_rate["mean"] - unresolved_rate["mean"], 4)
+
+        phase_posterior = _dirichlet_posterior_dict(stat["phase_counts"], PHASES)
+        phase_deltas = {}
+        dominant_phase = "general"
+        dominant_delta = 0.0
+        for phase in PHASES:
+            delta = phase_posterior[phase] - baseline_phase[phase]
+            phase_deltas[phase] = round(delta, 4)
+            if abs(delta) > abs(dominant_delta):
+                dominant_phase = phase
+                dominant_delta = delta
+
+        items.append({
+            "label": label,
+            "trajectory_support": trajectory_support,
+            "step_support": stat["step_support"],
+            "trajectory_rate": trajectory_rate,
+            "step_rate": step_rate,
+            "resolved_rate": resolved_rate,
+            "unresolved_rate": unresolved_rate,
+            "status_gap": status_gap,
+            "avg_steps_when_present": round(stat["step_support"] / max(trajectory_support, 1), 2),
+            "phase": {
+                "posterior": phase_posterior,
+                "dominant_phase": dominant_phase,
+                "dominant_delta": round(dominant_delta, 4),
+                "deltas": phase_deltas,
+            },
+            "companions": [
+                {"label": other, "count": count}
+                for other, count in stat["companions"].most_common(3)
+            ],
+        })
+
+    items.sort(
+        key=lambda item: (
+            -(item["trajectory_rate"]["mean"] if item["trajectory_rate"] else 0),
+            -abs(item["status_gap"] or 0),
+            -item["trajectory_support"],
+            item["label"],
+        )
+    )
+    return items[:max_items]
+
+
 def _extract_step_records(traj_data: dict, agent_type: str, cmd_parser) -> list[StepRecord]:
     if agent_type == "oh":
         return _extract_oh_steps(traj_data, cmd_parser)
@@ -364,10 +571,13 @@ def _extract_sa_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
         action = step.get("action", "") or ""
         observation = step.get("observation", "") or ""
         phase = _phase_from_action(action, prev_phases, cmd_parser)
+        tools, commands = _extract_action_entities(action, cmd_parser)
         steps.append(StepRecord(
             phase=phase,
             text=f"{thought}\n{action}".strip(),
             observation_outcome=detect_observation_outcome(observation),
+            tools=tools,
+            commands=commands,
         ))
         prev_phases.append(phase)
     return steps
@@ -388,6 +598,8 @@ def _extract_oh_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
         thought = ""
         action_parts = []
         phase = "general"
+        step_tools: set[str] = set()
+        step_commands: set[str] = set()
 
         for choice in choices:
             message = choice.get("message", {})
@@ -409,12 +621,17 @@ def _extract_oh_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
                 action_parts.append(f"{name} {args_raw}".strip())
                 if phase == "general":
                     phase = _phase_from_tool_call(name, args_raw, prev_phases, cmd_parser)
+                tools, commands = _extract_tool_call_entities(name, args_raw, cmd_parser)
+                step_tools.update(tools)
+                step_commands.update(commands)
 
         observation = step.get("content", "") or ""
         steps.append(StepRecord(
             phase=phase,
             text=f"{thought}\n{'\n'.join(action_parts)}".strip(),
             observation_outcome=detect_observation_outcome(observation),
+            tools=sorted(step_tools) or ["think"],
+            commands=sorted(step_commands) or ["think"],
         ))
         prev_phases.append(phase)
     return steps
@@ -439,6 +656,8 @@ def _extract_msa_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
         thought_parts = []
         action_parts = []
         phase = "general"
+        step_tools: set[str] = set()
+        step_commands: set[str] = set()
 
         for block in output_blocks:
             if not isinstance(block, dict):
@@ -455,12 +674,17 @@ def _extract_msa_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
                         args_json = {}
                     cmd_str = args_json.get("command", "")
                     phase = _phase_from_action(cmd_str, prev_phases, cmd_parser)
+                tools, commands = _extract_tool_call_entities(block.get("name", ""), args_raw, cmd_parser)
+                step_tools.update(tools)
+                step_commands.update(commands)
 
         observation = user.get("content", "") or ""
         steps.append(StepRecord(
             phase=phase,
             text=f"{'\n'.join(thought_parts)}\n{'\n'.join(action_parts)}".strip(),
             observation_outcome=detect_observation_outcome(observation),
+            tools=sorted(step_tools) or ["think"],
+            commands=sorted(step_commands) or ["think"],
         ))
         prev_phases.append(phase)
         index += 2
@@ -484,15 +708,91 @@ def _extract_msa_v1_steps(traj_data: dict, cmd_parser) -> list[StepRecord]:
         action = match.group(1).strip() if match else ""
         thought = re.sub(r"```bash\s*.*?```", "", content, flags=re.DOTALL).strip()
         phase = _phase_from_action(action, prev_phases, cmd_parser)
+        tools, commands = _extract_action_entities(action, cmd_parser)
 
         steps.append(StepRecord(
             phase=phase,
             text=f"{thought}\n{action}".strip(),
             observation_outcome=detect_observation_outcome(user.get("content", "") or ""),
+            tools=tools,
+            commands=commands,
         ))
         prev_phases.append(phase)
         index += 2
     return steps
+
+
+def _extract_action_entities(action: str, cmd_parser) -> tuple[list[str], list[str]]:
+    action = (action or "").strip()
+    if not action:
+        return ["think"], ["think"]
+
+    parsed_commands = cmd_parser.parse(action) if cmd_parser and action else []
+    if not parsed_commands:
+        naive = _naive_command_label(action)
+        if not naive:
+            return ["think"], ["think"]
+        return ["shell"], [naive]
+
+    tools: set[str] = set()
+    commands: set[str] = set()
+    for parsed in parsed_commands:
+        tool_label = _tool_label_from_parsed(parsed)
+        command_label = _command_label_from_parsed(parsed)
+        if tool_label:
+            tools.add(tool_label)
+        if command_label:
+            commands.add(command_label)
+    return sorted(tools) or ["think"], sorted(commands) or ["think"]
+
+
+def _extract_tool_call_entities(name: str, args_raw: str, cmd_parser) -> tuple[list[str], list[str]]:
+    normalized_name = (name or "").strip().lower()
+    if not normalized_name:
+        return ["think"], ["think"]
+
+    try:
+        args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+    except Exception:
+        args = {}
+
+    tools = {normalized_name}
+    commands: set[str] = set()
+    if normalized_name == "execute_bash":
+        _, bash_commands = _extract_action_entities(args.get("command", ""), cmd_parser)
+        commands.update(label for label in bash_commands if label != "think")
+    else:
+        subcommand = (args.get("command") or "").strip().lower() if isinstance(args, dict) else ""
+        commands.add(f"{normalized_name}:{subcommand}" if subcommand else normalized_name)
+
+    return sorted(tools) or ["think"], sorted(commands) or ["think"]
+
+
+def _tool_label_from_parsed(parsed: dict[str, Any]) -> str | None:
+    tool = (parsed.get("tool") or "").strip().lower()
+    command = (parsed.get("command") or "").strip().lower()
+    if tool:
+        return tool
+    if command:
+        return "shell"
+    return None
+
+
+def _command_label_from_parsed(parsed: dict[str, Any]) -> str | None:
+    tool = (parsed.get("tool") or "").strip().lower()
+    subcommand = (parsed.get("subcommand") or "").strip().lower()
+    command = (parsed.get("command") or "").strip().lower()
+
+    if tool:
+        return f"{tool}:{subcommand}" if subcommand else tool
+    if command:
+        return command
+    return None
+
+
+def _naive_command_label(action: str) -> str | None:
+    match = re.search(r"[A-Za-z_][A-Za-z0-9_\-\.]*", action or "")
+    return match.group(0).lower() if match else None
 
 
 def _phase_from_action(action: str, prev_phases: list[str], cmd_parser) -> str:

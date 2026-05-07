@@ -6,7 +6,7 @@
     <title>Trajectory Graph Browser</title>
     <link rel="stylesheet" href="/static/browser.css">
     <style>
-        .sankey-item, .bayes-item {
+        .sankey-item, .bayes-item, .compare-item {
             padding: 10px 14px;
             cursor: pointer;
             transition: background .15s;
@@ -35,14 +35,27 @@
             border-left: 3px solid #2f8f5b;
             padding-left: 11px;
         }
+        .compare-item {
+            border-bottom: 2px solid #eedec6;
+            background: #fff8ef;
+        }
+        .compare-item:hover { background: #fff1dd; }
+        .compare-item.active {
+            background: #fff3e3;
+            border-left: 3px solid #d17f2f;
+            padding-left: 11px;
+        }
         .sankey-item-icon { font-size: 20px; flex-shrink: 0; line-height: 1; }
         .sankey-item-title { font-size: 13px; font-weight: 700; color: #3b4ecc; }
         .sankey-item-sub { font-size: 11px; color: #888; margin-top: 1px; }
         .bayes-item-title { font-size: 13px; font-weight: 700; color: #246b44; }
         .bayes-item-sub { font-size: 11px; color: #7a857b; margin-top: 1px; }
+        .compare-item-title { font-size: 13px; font-weight: 700; color: #9a571c; }
+        .compare-item-sub { font-size: 11px; color: #8e7b66; margin-top: 1px; }
 
         #sankeyPane,
-        #bayesPane {
+        #bayesPane,
+        #comparePane {
             display: none;
             flex-direction: column;
             width: 100%;
@@ -54,6 +67,13 @@
             background:
                 radial-gradient(circle at top left, rgba(88, 180, 120, .10), transparent 35%),
                 linear-gradient(180deg, #eef5ef 0%, #f7f9f7 100%);
+            overflow: auto;
+        }
+        #comparePane {
+            background:
+                radial-gradient(circle at top left, rgba(224, 145, 53, .11), transparent 32%),
+                linear-gradient(180deg, #fff6ee 0%, #fbf8f3 100%);
+            overflow: auto;
         }
 
         .sk-controls,
@@ -113,6 +133,63 @@
             cursor: pointer;
         }
         .by-refresh:disabled { opacity: .6; cursor: default; }
+        .cp-controls,
+        .cp-stats {
+            background: rgba(255,255,255,.92);
+            border-bottom: 1px solid #ede1d5;
+            flex-shrink: 0;
+        }
+        .cp-controls {
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .cp-stats {
+            padding: 8px 20px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: #6e655b;
+        }
+        .cp-stats b { color: #352819; }
+        .cp-ctrl {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .cp-ctrl label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #6c5540;
+            white-space: nowrap;
+        }
+        .cp-ctrl select,
+        .cp-ctrl input[type=number] {
+            font-size: 12px;
+            border: 1.5px solid #decab8;
+            border-radius: 8px;
+            padding: 4px 7px;
+            outline: none;
+            background: #fff;
+            color: #34281f;
+        }
+        .cp-ctrl select:focus,
+        .cp-ctrl input[type=number]:focus { border-color: #d17f2f; }
+        .cp-ctrl input[type=number] { width: 72px; }
+        .cp-refresh {
+            border: none;
+            border-radius: 9px;
+            padding: 7px 14px;
+            background: linear-gradient(135deg, #d17f2f 0%, #e2a94d 100%);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .cp-refresh:disabled { opacity: .6; cursor: default; }
 
         .sk-chips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
         .sk-chip {
@@ -191,16 +268,24 @@
             border: 1px solid rgba(255,255,255,.1);
         }
 
-        .by-layout {
-            flex: 1;
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(320px, 1.2fr) minmax(340px, .9fr);
+        .by-stack {
+            flex: 0 0 auto;
+            min-height: min-content;
+            display: flex;
+            flex-direction: column;
             gap: 18px;
             padding: 18px;
         }
+        .by-top-layout {
+            display: grid;
+            grid-template-columns: minmax(320px, 1.2fr) minmax(340px, .9fr);
+            align-items: start;
+            gap: 18px;
+        }
         .by-panel {
             min-height: 0;
+            height: fit-content;
+            align-self: start;
             background: rgba(255,255,255,.90);
             border: 1px solid rgba(164, 188, 169, .45);
             border-radius: 18px;
@@ -217,10 +302,46 @@
             justify-content: space-between;
             gap: 10px;
         }
+        .by-panel-head-main {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            flex: 1;
+            min-width: 0;
+        }
+        .by-panel-head-text {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
         .by-panel-head h3 { font-size: 14px; color: #203326; }
         .by-panel-head span { font-size: 11px; color: #76847a; }
+        .by-panel-toggle {
+            border: 1px solid #cfe0d3;
+            background: #f7fbf8;
+            color: #2f8f5b;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .by-panel-toggle:hover {
+            background: #edf7ef;
+        }
+        .by-panel-body {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .by-panel.collapsed .by-panel-body {
+            display: none;
+        }
         .by-canvas {
-            flex: 1;
+            flex: 1 1 auto;
             min-height: 260px;
             padding: 10px 14px 16px;
             overflow: auto;
@@ -365,8 +486,413 @@
             bottom: 0;
             border-radius: 999px;
         }
+        .by-command-dock {
+            padding: 0;
+            flex: 0 0 auto;
+        }
+        .by-command-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+            padding: 12px 14px 16px;
+        }
+        .by-command-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+        }
+        .by-command-card {
+            border: 1px solid #e3ece4;
+            border-radius: 14px;
+            padding: 10px 11px;
+            background: linear-gradient(180deg, #ffffff 0%, #f9fcf9 100%);
+        }
+        .by-command-top {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 7px;
+        }
+        .by-command-title {
+            font-size: 13px;
+            font-weight: 800;
+            color: #213126;
+            word-break: break-word;
+        }
+        .by-command-rate {
+            font-size: 16px;
+            font-weight: 800;
+            color: #2f8f5b;
+            flex-shrink: 0;
+        }
+        .by-prob-bar {
+            height: 10px;
+            border-radius: 999px;
+            background: #edf3ee;
+            overflow: hidden;
+            position: relative;
+        }
+        .by-prob-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #2f8f5b 0%, #7eb96b 100%);
+        }
+        .by-command-meta {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 8px;
+            font-size: 11px;
+            color: #6c786f;
+        }
+        .by-command-meta b {
+            display: block;
+            font-size: 12px;
+            color: #213126;
+            margin-bottom: 2px;
+        }
+        .by-command-split {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+            font-size: 11px;
+            color: #6c786f;
+            flex-wrap: wrap;
+        }
+        .by-command-foot {
+            margin-top: 8px;
+            font-size: 11px;
+            color: #6c786f;
+            line-height: 1.5;
+        }
+        .by-command-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .by-command-chip {
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #eef5ef;
+            color: #3a5e44;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        .by-expandable {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 6px;
+            min-width: 0;
+        }
+        .by-expand-text {
+            min-width: 0;
+            word-break: break-word;
+        }
+        .by-expand-toggle {
+            border: none;
+            background: transparent;
+            color: #2f8f5b;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 0;
+            cursor: pointer;
+        }
+        .by-expand-toggle:hover { text-decoration: underline; }
+        .by-chip-overflow {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+        .cp-stack {
+            flex: 0 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            padding: 18px;
+        }
+        .cp-framework-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+        }
+        .cp-card,
+        .cp-panel {
+            background: rgba(255,255,255,.92);
+            border: 1px solid rgba(219, 193, 171, .55);
+            border-radius: 18px;
+            box-shadow: 0 10px 30px rgba(90, 58, 25, .07);
+            overflow: hidden;
+        }
+        .cp-card {
+            padding: 14px 15px 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .cp-card-head,
+        .cp-panel-head,
+        .cp-subhead {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .cp-panel-head {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid #f0e2d6;
+        }
+        .cp-panel-head h3,
+        .cp-subhead h3,
+        .cp-card h3 {
+            font-size: 14px;
+            color: #352819;
+        }
+        .cp-panel-head span,
+        .cp-subhead span,
+        .cp-card-sub {
+            font-size: 11px;
+            color: #907866;
+        }
+        .cp-card-label {
+            font-size: 16px;
+            font-weight: 800;
+            color: #352819;
+        }
+        .cp-badge {
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #fff4e6;
+            color: #b06826;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .cp-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            font-size: 11px;
+            color: #7a6d61;
+        }
+        .cp-kpi-grid b {
+            display: block;
+            font-size: 13px;
+            color: #352819;
+        }
+        .cp-phase-mini {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .cp-phase-row {
+            display: grid;
+            grid-template-columns: 90px 1fr 54px;
+            gap: 9px;
+            align-items: center;
+            font-size: 12px;
+            color: #5b4f43;
+        }
+        .cp-phase-track {
+            position: relative;
+            height: 10px;
+            border-radius: 999px;
+            background: #f2e7dd;
+            overflow: hidden;
+        }
+        .cp-phase-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            border-radius: 999px;
+        }
+        .cp-pair-grid,
+        .cp-dual-grid {
+            display: grid;
+            gap: 18px;
+        }
+        .cp-pair-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .cp-dual-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            padding: 12px 16px 16px;
+        }
+        .cp-panel-body,
+        .cp-delta-list {
+            padding: 12px 16px 16px;
+        }
+        .cp-panel-body {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .cp-delta-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .cp-empty {
+            padding: 28px;
+            text-align: center;
+            color: #998677;
+            font-size: 13px;
+        }
+        .cp-matchup {
+            border: 1px solid #f0e2d6;
+            border-radius: 14px;
+            padding: 12px;
+            background: linear-gradient(180deg, #fffdfa 0%, #fff7ef 100%);
+        }
+        .cp-matchup h4 {
+            font-size: 12px;
+            color: #7a5d3d;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+        }
+        .cp-matchup-main {
+            font-size: 18px;
+            font-weight: 800;
+            color: #352819;
+            margin-bottom: 4px;
+        }
+        .cp-matchup-sub {
+            font-size: 12px;
+            color: #6e645a;
+            line-height: 1.5;
+        }
+        .cp-delta-card {
+            border: 1px solid #f0e2d6;
+            border-radius: 14px;
+            padding: 11px 12px;
+            background: linear-gradient(180deg, #ffffff 0%, #fffbf6 100%);
+        }
+        .cp-delta-top {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 7px;
+        }
+        .cp-delta-title {
+            font-size: 13px;
+            font-weight: 800;
+            color: #352819;
+            word-break: break-word;
+        }
+        .cp-delta-value {
+            font-size: 16px;
+            font-weight: 800;
+            color: #d17f2f;
+            flex-shrink: 0;
+        }
+        .cp-delta-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px;
+            font-size: 11px;
+            color: #7b6f64;
+        }
+        .cp-delta-meta b {
+            display: block;
+            font-size: 12px;
+            color: #352819;
+            margin-bottom: 2px;
+        }
+        .cp-delta-foot {
+            margin-top: 8px;
+            font-size: 11px;
+            color: #7b6f64;
+            line-height: 1.5;
+        }
+        .cp-causal-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 18px;
+            padding: 12px 16px 16px;
+        }
+        .cp-causal-block {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .cp-causal-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+        .cp-note {
+            border: 1px solid #f0e2d6;
+            border-radius: 14px;
+            padding: 11px 12px;
+            background: #fffaf4;
+            color: #7a6a5b;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+        .cp-note b { color: #5f4830; }
+        .cp-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .cp-strip-pill {
+            padding: 5px 9px;
+            border-radius: 999px;
+            background: #fff4e6;
+            color: #8b5b25;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .cp-mini-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .cp-mini-kpi {
+            border: 1px solid #f0e2d6;
+            border-radius: 14px;
+            padding: 11px 12px;
+            background: linear-gradient(180deg, #fffdfa 0%, #fff7ef 100%);
+        }
+        .cp-mini-kpi b {
+            display: block;
+            font-size: 16px;
+            color: #352819;
+            margin-bottom: 3px;
+        }
+        .cp-mini-sub {
+            font-size: 11px;
+            color: #7a6d61;
+            line-height: 1.5;
+        }
+        .cp-coverage-bar {
+            display: flex;
+            width: 100%;
+            height: 10px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: #f2e7dd;
+            margin-top: 8px;
+        }
+        .cp-coverage-seg-shared { background: #d78b3f; }
+        .cp-coverage-seg-base { background: #f2cfa6; }
+        .cp-coverage-seg-focus { background: #b77734; }
         @media (max-width: 1100px) {
-            .by-layout { grid-template-columns: 1fr; }
+            .by-top-layout { grid-template-columns: 1fr; }
+            .by-command-grid { grid-template-columns: 1fr; }
+            .cp-pair-grid,
+            .cp-dual-grid,
+            .cp-causal-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -391,6 +917,13 @@
                 <div class="bayes-item-sub">Token and sequence effects on process and outcomes</div>
             </div>
         </div>
+        <div class="compare-item" id="compareListItem" onclick="selectCompare()">
+            <span class="sankey-item-icon">C</span>
+            <div>
+                <div class="compare-item-title">Framework Compare Deck</div>
+                <div class="compare-item-sub">Contrast multiple agentic runs and their signatures</div>
+            </div>
+        </div>
 
         <div class="data-source" id="dataSource">
             <button class="data-source-toggle" id="dataSourceToggle" onclick="toggleDataSource()">
@@ -398,15 +931,17 @@
                 <span class="ds-chevron" id="dsChevron">▾</span>
             </button>
             <div class="data-source-body" id="dataSourceBody">
-                <label class="ds-label" for="trajsInput">Trajectories path</label>
-                <input type="text" id="trajsInput" class="ds-input"
-                    placeholder="/path/to/trajectories  or  output.jsonl"
-                    spellcheck="false" autocomplete="off">
-                <label class="ds-label" for="reportInput">Eval report path (optional)</label>
-                <input type="text" id="reportInput" class="ds-input"
-                    placeholder="/path/to/report.json" spellcheck="false" autocomplete="off">
+                <div class="ds-framework-list" id="frameworkRows"></div>
+                <div class="ds-footer-row">
+                    <button type="button" class="ds-secondary-btn" onclick="addFrameworkRow()">Add framework</button>
+                    <div class="ds-primary-wrap">
+                        <label class="ds-label" for="primaryFrameworkSelect">Primary graph framework</label>
+                        <select id="primaryFrameworkSelect" class="ds-select" onchange="onPrimaryDatasetChange()"></select>
+                        <div class="ds-helper">The primary framework drives the graph list, single-instance view, Sankey, and Bayesian studio.</div>
+                    </div>
+                </div>
                 <div id="dsError" class="ds-error" style="display:none;"></div>
-                <button class="ds-apply-btn" id="dsApplyBtn" onclick="applyDataSource()">Load</button>
+                <button class="ds-apply-btn" id="dsApplyBtn" onclick="applyDataSource()">Load frameworks</button>
             </div>
         </div>
 
@@ -455,7 +990,7 @@
             <div class="placeholder" style="position:relative;padding:40px;text-align:center;">
                 <span style="font-size:36px;opacity:.25;">...</span>
                 <p style="margin-top:12px;color:#aaa;font-size:13px;">
-                    Set a data source above to load trajectories.
+                    Load one or more frameworks above to browse trajectories.
                 </p>
             </div>
         </div>
@@ -553,28 +1088,246 @@
                 <button class="by-refresh" id="byRefreshBtn" onclick="byLoad(true)">Refresh</button>
             </div>
             <div class="by-stats" id="byStats"><span>-</span></div>
-            <div class="by-layout">
-                <div class="by-panel">
-                    <div class="by-panel-head">
-                        <h3>Effect Skyline</h3>
-                        <span>Resolved lift on x, support on y, process shift called out</span>
+            <div class="by-stack">
+                <div class="by-top-layout">
+                    <div class="by-panel">
+                        <div class="by-panel-head">
+                            <div class="by-panel-head-main">
+                                <div class="by-panel-head-text">
+                                    <h3>Effect Skyline</h3>
+                                    <span>Resolved lift on x, support on y, process shift called out</span>
+                                </div>
+                                <button type="button" class="by-panel-toggle" onclick="byTogglePanel(this)" aria-expanded="true">Minimize</button>
+                            </div>
+                        </div>
+                        <div class="by-panel-body">
+                            <div class="by-canvas" id="bySkylineWrap">
+                                <svg id="bySkyline"></svg>
+                            </div>
+                            <div class="by-panel-head" style="border-top:1px solid #e6eee7;border-bottom:none;">
+                                <h3>Feature Board</h3>
+                                <span>Click any feature for posterior details</span>
+                            </div>
+                            <div class="by-list" id="byFeatureList"></div>
+                        </div>
                     </div>
-                    <div class="by-canvas" id="bySkylineWrap">
-                        <svg id="bySkyline"></svg>
+                    <div class="by-panel">
+                        <div class="by-panel-head">
+                            <div class="by-panel-head-main">
+                                <div class="by-panel-head-text">
+                                    <h3>Posterior Detail</h3>
+                                    <span>Credible intervals and next-phase shifts</span>
+                                </div>
+                                <button type="button" class="by-panel-toggle" onclick="byTogglePanel(this)" aria-expanded="true">Minimize</button>
+                            </div>
+                        </div>
+                        <div class="by-panel-body">
+                            <div class="by-detail" id="byDetail">
+                                <div class="by-empty">Load the Bayesian view and select a feature to inspect its estimated effects.</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="by-panel-head" style="border-top:1px solid #e6eee7;border-bottom:none;">
-                        <h3>Feature Board</h3>
-                        <span>Click any feature for posterior details</span>
-                    </div>
-                    <div class="by-list" id="byFeatureList"></div>
                 </div>
-                <div class="by-panel">
-                    <div class="by-panel-head">
-                        <h3>Posterior Detail</h3>
-                        <span>Credible intervals and next-phase shifts</span>
+                <div class="by-command-dock">
+                    <div class="by-panel">
+                        <div class="by-panel-head">
+                            <div class="by-panel-head-main">
+                                <div class="by-panel-head-text">
+                                    <h3>Command Probability Atlas</h3>
+                                    <span>Posterior probability that a trajectory uses a tool or command at least once</span>
+                                </div>
+                                <button type="button" class="by-panel-toggle" onclick="byTogglePanel(this)" aria-expanded="true">Minimize</button>
+                            </div>
+                        </div>
+                        <div class="by-panel-body">
+                            <div class="by-command-grid">
+                                <div>
+                                    <div class="by-panel-head" style="padding:0 0 8px;border-bottom:none;">
+                                        <h3>Tools</h3>
+                                        <span>Framework-level actions</span>
+                                    </div>
+                                    <div class="by-command-list" id="byToolList"></div>
+                                </div>
+                                <div>
+                                    <div class="by-panel-head" style="padding:0 0 8px;border-bottom:none;">
+                                        <h3>Commands</h3>
+                                        <span>Shell roots and tool subcommands</span>
+                                    </div>
+                                    <div class="by-command-list" id="byCommandList"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div> 
+                </div>
+            </div>
+        </div>
+
+        <div id="comparePane">
+            <div class="cp-controls">
+                <div class="cp-ctrl">
+                    <label for="cpBaseline">Baseline</label>
+                    <select id="cpBaseline"></select>
+                </div>
+                <div class="cp-ctrl">
+                    <label for="cpFocus">Focus</label>
+                    <select id="cpFocus"></select>
+                </div>
+                <div class="cp-ctrl">
+                    <label for="cpStatus">Status</label>
+                    <select id="cpStatus">
+                        <option value="all">All trajectories</option>
+                        <option value="resolved">Resolved only</option>
+                        <option value="unresolved">Unresolved only</option>
+                        <option value="unsubmitted">Unsubmitted only</option>
+                    </select>
+                </div>
+                <div class="cp-ctrl">
+                    <label for="cpFeatureType">Signal type</label>
+                    <select id="cpFeatureType">
+                        <option value="all">Tokens + sequences</option>
+                        <option value="token">Tokens only</option>
+                        <option value="sequence">Sequences only</option>
+                    </select>
+                </div>
+                <div class="cp-ctrl">
+                    <label for="cpMinSupport">Min support</label>
+                    <input type="number" id="cpMinSupport" min="1" max="200" value="4">
+                </div>
+                <div class="cp-ctrl">
+                    <label for="cpTopN">Top signals</label>
+                    <input type="number" id="cpTopN" min="5" max="200" value="24">
+                </div>
+                <button class="cp-refresh" id="cpRefreshBtn" onclick="cpLoad(true)">Refresh</button>
+            </div>
+            <div class="cp-stats" id="cpStats"><span>-</span></div>
+            <div class="cp-stack">
+                <div class="cp-framework-grid" id="cpFrameworkGrid">
+                    <div class="cp-empty">Load at least two frameworks to compare them.</div>
+                </div>
+                <div class="cp-pair-grid">
+                    <div class="cp-panel">
+                        <div class="cp-panel-head">
+                            <div>
+                                <h3>Head-to-Head</h3>
+                                <span>Resolved rate, depth, and dataset shape deltas</span>
+                            </div>
+                        </div>
+                        <div class="cp-panel-body" id="cpPairSummary">
+                            <div class="cp-empty">Pick two frameworks to see the matchup story.</div>
+                        </div>
                     </div>
-                    <div class="by-detail" id="byDetail">
-                        <div class="by-empty">Load the Bayesian view and select a feature to inspect its estimated effects.</div>
+                    <div class="cp-panel">
+                        <div class="cp-panel-head">
+                            <div>
+                                <h3>Phase Signature Drift</h3>
+                                <span>How the focus framework redistributes process share</span>
+                            </div>
+                        </div>
+                        <div class="cp-panel-body" id="cpPhaseDelta">
+                            <div class="cp-empty">Phase movement will appear here.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="cp-panel">
+                    <div class="cp-panel-head">
+                        <div>
+                            <h3>Causal Matchup Lab</h3>
+                            <span>Matched-task effects, post-stratification, and overlap diagnostics inspired by Homework 2</span>
+                        </div>
+                    </div>
+                    <div class="cp-causal-grid">
+                        <div class="cp-causal-block">
+                            <div class="cp-subhead">
+                                <h3>Effect Cards</h3>
+                                <span>Shared-task outcome and workload comparisons</span>
+                            </div>
+                            <div class="cp-causal-cards" id="cpCausalCards">
+                                <div class="cp-empty">Matched-task effect cards will appear here.</div>
+                            </div>
+                        </div>
+                        <div class="cp-causal-block">
+                            <div class="cp-subhead">
+                                <h3>Coverage Story</h3>
+                                <span>Where the comparison is well supported and where it is sparse</span>
+                            </div>
+                            <div id="cpCoverageSummary">
+                                <div class="cp-empty">Overlap and coverage diagnostics will appear here.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="cp-pair-grid">
+                    <div class="cp-panel">
+                        <div class="cp-panel-head">
+                            <div>
+                                <h3>Task Family Post-stratification</h3>
+                                <span>Weighted family-level deltas across the shared task overlap</span>
+                            </div>
+                        </div>
+                        <div class="cp-delta-list" id="cpFamilyStrata">
+                            <div class="cp-empty">Family strata will appear here.</div>
+                        </div>
+                    </div>
+                    <div class="cp-panel">
+                        <div class="cp-panel-head">
+                            <div>
+                                <h3>Hierarchical Shrinkage</h3>
+                                <span>Empirical-Bayes family summaries to avoid over-reading tiny task groups</span>
+                            </div>
+                        </div>
+                        <div class="cp-delta-list" id="cpShrinkage">
+                            <div class="cp-empty">Shrinkage summaries will appear here.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="cp-panel">
+                    <div class="cp-panel-head">
+                        <div>
+                            <h3>Coverage by Task Family</h3>
+                            <span>Shared versus framework-specific instance coverage</span>
+                        </div>
+                    </div>
+                    <div class="cp-delta-list" id="cpCoverageFamilies">
+                        <div class="cp-empty">Family coverage will appear here.</div>
+                    </div>
+                </div>
+                <div class="cp-panel">
+                    <div class="cp-panel-head">
+                        <div>
+                            <h3>Feature Divergence</h3>
+                            <span>Tokens and sequences that separate the selected frameworks</span>
+                        </div>
+                    </div>
+                    <div class="cp-delta-list" id="cpFeatureDelta">
+                        <div class="cp-empty">Framework-specific signal deltas will appear here.</div>
+                    </div>
+                </div>
+                <div class="cp-panel">
+                    <div class="cp-panel-head">
+                        <div>
+                            <h3>Tool and Command Matchup</h3>
+                            <span>Usage probability differences between the selected frameworks</span>
+                        </div>
+                    </div>
+                    <div class="cp-dual-grid">
+                        <div>
+                            <div class="cp-subhead">
+                                <h3>Tools</h3>
+                                <span>Framework-level actions</span>
+                            </div>
+                            <div class="cp-delta-list" id="cpToolDelta">
+                                <div class="cp-empty">Tool deltas will appear here.</div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="cp-subhead">
+                                <h3>Commands</h3>
+                                <span>Shell roots and tool subcommands</span>
+                            </div>
+                            <div class="cp-delta-list" id="cpCommandDelta">
+                                <div class="cp-empty">Command deltas will appear here.</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
